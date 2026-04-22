@@ -47,7 +47,7 @@ try { ADMIN_HTML = require('./admin.html'); }
 catch (e) { ADMIN_HTML = fs.readFileSync(path.join(__dirname, 'admin.html'), 'utf8'); }
 
 const CONFIG = {
-  port: parseInt(process.env.PORT || '3000'),
+  port: parseInt(process.env.PORT || '1312'),
   host: process.env.HOST || 'localhost',
   jwtSecret: process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex'),
   jwtExpiry: '15m',
