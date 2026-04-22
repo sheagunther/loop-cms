@@ -120,6 +120,13 @@ const CONTRACT_CONFIGS = {
     rbacPermission: 'content:write',
     proofLevel: 'audit',
   },
+  PREVIEW_EFFECTS: {
+    type: 'read', surface: 'required',
+    sanitize: false,
+    rateLimit: 'admin',
+    rbacPermission: 'content:read',
+    proofLevel: 'normal',
+  },
   PUBLISH_CONTENT: {
     type: 'write', surface: 'required',
     sanitize: false,
@@ -851,6 +858,34 @@ function reqExecute(data, identity, config, req) {
       return { ok: true, status: 200, data: { deleted: item.id, slug: item.slug } };
     }
 
+    case 'PREVIEW_EFFECTS': {
+      const transition = data.transition || 'publish';
+      const eventMap = {
+        publish:   'content.published',
+        unpublish: 'content.unpublished',
+        create:    'content.created',
+        update:    'content.updated',
+        delete:    'content.deleted',
+      };
+      const event = eventMap[transition] || null;
+      const item = req.contentId
+        ? db.prepare('SELECT id, slug FROM content WHERE id=?').get(req.contentId)
+        : null;
+      const hooks = db.prepare('SELECT id, url, events FROM webhooks WHERE enabled=1').all();
+      const matching = hooks.filter(h => {
+        try { return JSON.parse(h.events).includes(event); } catch (e) { return false; }
+      });
+      return { ok: true, status: 200, data: {
+        content_id: item?.id || req.contentId || null,
+        slug: item?.slug || null,
+        transition, event,
+        webhooks: matching.map(h => ({ id: h.id, url: h.url })),
+        webhook_count: matching.length,
+        cache_keys: [],      // no response cache at Tier 1 — placeholder for FBD-CA1 later
+        feeds: ['sitemap.xml', 'feed.xml'],
+      }};
+    }
+
     case 'RESTORE_CONTENT': {
       const item = db.prepare('SELECT * FROM content WHERE id = ?').get(req.contentId);
       if (!item) return { ok: false, status: 404, error: 'Content not found' };
@@ -1208,6 +1243,12 @@ async function handleRequest(req, res) {
 
     if (method === 'DELETE' && parts.length === 3) {
       const result = processRequest({ contractId: 'DELETE_CONTENT', token, contentId: parts[2] });
+      sendJson(res, result.status, result.ok ? result.data : { error: result.error });
+      return;
+    }
+
+    if (method === 'POST' && parts.length === 4 && parts[3] === 'preview-effects') {
+      const result = processRequest({ contractId: 'PREVIEW_EFFECTS', token, contentId: parts[2], payload: body });
       sendJson(res, result.status, result.ok ? result.data : { error: result.error });
       return;
     }
