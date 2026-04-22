@@ -95,6 +95,13 @@ const CONTRACT_CONFIGS = {
     rbacPermission: 'content:write',
     proofLevel: 'audit',
   },
+  RESTORE_CONTENT: {
+    type: 'write', surface: 'required',
+    sanitize: false,
+    rateLimit: 'admin',
+    rbacPermission: 'content:write',
+    proofLevel: 'audit',
+  },
   PUBLISH_CONTENT: {
     type: 'write', surface: 'required',
     sanitize: false,
@@ -463,14 +470,18 @@ function processRequest(req) {
     return { ok: false, status: 400, error: 'Unknown contract', code: 'UNKNOWN_CONTRACT' };
   }
 
+  // Public reads (surface='public') bypass auth/authz — anonymous visitors
+  // may fetch published content, hit the public search, etc.
+  const isPublicRead = config.type === 'read' && req.surface === 'public';
+
   // Phase 1: Authenticate (FBD-AU1)
   const identity = reqAuthenticate(req, config);
-  if (!identity.ok && config.rbacPermission) {
+  if (!identity.ok && config.rbacPermission && !isPublicRead) {
     return { ok: false, status: 401, error: identity.error, code: 'AUTH_FAILED' };
   }
 
   // Phase 2: Authorize (FBD-RB1)
-  if (config.rbacPermission) {
+  if (config.rbacPermission && !isPublicRead) {
     const auth = reqAuthorize(identity, config);
     if (!auth.ok) {
       return { ok: false, status: 403,
@@ -575,7 +586,7 @@ function reqExecute(data, identity, config, req) {
           meta_title, meta_description, tags, author_id, fields_modified)
           VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
           .run(existing.id, revNum, updated.title, slug, updated.body, existing.status,
-            data.meta_title, data.meta_description, data.tags, userId,
+            updated.meta_title ?? null, updated.meta_description ?? null, updated.tags ?? null, userId,
             JSON.stringify(Object.keys(data).filter(k => !k.startsWith('_'))));
 
         // Update FTS
@@ -605,39 +616,45 @@ function reqExecute(data, identity, config, req) {
           VALUES (?,?,?,?,?,?,?,?)`)
           .run(id, 1, data.title, slug, data.body || '', 'draft', userId, '["create"]');
 
+        // Index in FTS — FBD-FTS1 (mirror of UPDATE path)
+        try {
+          db.prepare(`INSERT INTO content_fts(rowid, title, body, slug, tags)
+            VALUES ((SELECT rowid FROM content WHERE id=?), ?, ?, ?, ?)`)
+            .run(id, data.title, data.body || '', slug, data.tags || '[]');
+        } catch(e) { /* FTS best-effort at Tier 1 */ }
+
         return { ok: true, status: 201, data: { id, title: data.title, slug, status: 'draft', checksum }, note: data._sanitizeNote };
       }
     }
 
     case 'FETCH_CONTENT_AGGREGATE': {
       const surface = req.surface || 'editorial';
-      let query = 'SELECT * FROM content';
-      const params = [];
+      let whereClause = '';
+      const whereParams = [];
 
       if (surface === 'public') {
-        query += ' WHERE status = ?';
-        params.push('published');
+        whereClause += ' WHERE status = ?';
+        whereParams.push('published');
       }
-
       if (data.content_type) {
-        query += params.length ? ' AND' : ' WHERE';
-        query += ' content_type = ?';
-        params.push(data.content_type);
+        whereClause += whereParams.length ? ' AND' : ' WHERE';
+        whereClause += ' content_type = ?';
+        whereParams.push(data.content_type);
       }
 
-      query += ' ORDER BY updated_at DESC';
-      if (data.limit) {
-        query += ' LIMIT ?';
-        params.push(Math.min(parseInt(data.limit) || 20, 100));
-      }
+      const total = db.prepare('SELECT COUNT(*) as n FROM content' + whereClause).get(...whereParams).n;
 
-      const rows = db.prepare(query).all(...params);
+      const limit = Math.min(parseInt(data.limit) || 20, 100);
+      const offset = Math.max(parseInt(data.offset) || 0, 0);
+      const rows = db.prepare('SELECT * FROM content' + whereClause + ' ORDER BY updated_at DESC LIMIT ? OFFSET ?')
+        .all(...whereParams, limit, offset);
+
       // FBD-CI1: verify checksums on read
       const verified = rows.map(r => {
         const expected = computeChecksum(r);
         return { ...r, _integrityOk: r.checksum === expected };
       });
-      return { ok: true, status: 200, data: verified };
+      return { ok: true, status: 200, data: verified, meta: { total, limit, offset } };
     }
 
     case 'FETCH_CONTENT_SINGLE': {
@@ -666,6 +683,14 @@ function reqExecute(data, identity, config, req) {
       if (!item.slug) return { ok: false, status: 400, error: 'Content needs a slug before it can be published. No address, no storefront.' };
 
       const now = new Date().toISOString();
+      // Scheduling: a future scheduled_at puts the item into 'scheduled' instead of 'published'.
+      const scheduledAt = data?.scheduled_at;
+      if (scheduledAt && new Date(scheduledAt) > new Date()) {
+        db.prepare('UPDATE content SET status=?, scheduled_at=?, surface=?, updated_at=? WHERE id=?')
+          .run('scheduled', scheduledAt, 'editorial', now, item.id);
+        return { ok: true, status: 200, data: { ...item, status: 'scheduled', scheduled_at: scheduledAt, surface: 'editorial' } };
+      }
+
       db.prepare('UPDATE content SET status = ?, published_at = ?, surface = ?, updated_at = ? WHERE id = ?')
         .run('published', now, 'public', now, item.id);
 
@@ -690,6 +715,47 @@ function reqExecute(data, identity, config, req) {
       }, userId);
       db.prepare('DELETE FROM content WHERE id = ?').run(item.id);
       return { ok: true, status: 200, data: { deleted: item.id, slug: item.slug } };
+    }
+
+    case 'RESTORE_CONTENT': {
+      const item = db.prepare('SELECT * FROM content WHERE id = ?').get(req.contentId);
+      if (!item) return { ok: false, status: 404, error: 'Content not found' };
+      const revNum = parseInt(data.revision_number);
+      if (!Number.isFinite(revNum)) return { ok: false, status: 400, error: 'Revision number required' };
+      const rev = db.prepare('SELECT * FROM content_revisions WHERE content_id=? AND revision_number=?')
+        .get(req.contentId, revNum);
+      if (!rev) return { ok: false, status: 404, error: 'Revision not found' };
+
+      const now = new Date().toISOString();
+      const restored = { ...item, title: rev.title, slug: rev.slug, body: rev.body,
+        meta_title: rev.meta_title, meta_description: rev.meta_description, tags: rev.tags };
+      const checksum = computeChecksum(restored);
+
+      db.prepare(`UPDATE content SET title=?, slug=?, body=?, meta_title=?, meta_description=?,
+        tags=?, checksum=?, updated_at=?, author_id=? WHERE id=?`)
+        .run(rev.title, rev.slug, rev.body, rev.meta_title, rev.meta_description,
+          rev.tags, checksum, now, userId, req.contentId);
+
+      // Non-destructive: the restore itself is a new revision.
+      const nextNum = (db.prepare('SELECT MAX(revision_number) as n FROM content_revisions WHERE content_id=?')
+        .get(req.contentId)?.n || 0) + 1;
+      db.prepare(`INSERT INTO content_revisions (content_id, revision_number, title, slug, body, status,
+        meta_title, meta_description, tags, author_id, fields_modified)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(req.contentId, nextNum, rev.title, rev.slug, rev.body, item.status,
+          rev.meta_title, rev.meta_description, rev.tags, userId,
+          JSON.stringify(['restore:' + revNum]));
+
+      try {
+        db.prepare(`INSERT INTO content_fts(rowid, title, body, slug, tags)
+          VALUES ((SELECT rowid FROM content WHERE id=?), ?, ?, ?, ?)`)
+          .run(req.contentId, rev.title, rev.body || '', rev.slug, rev.tags || '[]');
+      } catch(e) { /* best-effort */ }
+
+      return { ok: true, status: 200, data: {
+        id: req.contentId, restored_from: revNum, revision_number: nextNum,
+        title: rev.title, slug: rev.slug,
+      }};
     }
 
     case 'STORE_MEDIA': {
@@ -817,11 +883,12 @@ function validateCsrf(req, token) {
   return !!row && row.user_id === decoded.userId;
 }
 
-function sendJson(res, status, data) {
+function sendJson(res, status, data, extraHeaders = {}) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
     'X-Frame-Options': 'DENY',
     'Content-Security-Policy': "frame-ancestors 'none'",
+    ...extraHeaders,
   });
   res.end(JSON.stringify(data));
 }
@@ -919,9 +986,28 @@ async function handleRequest(req, res) {
         contractId: 'FETCH_CONTENT_AGGREGATE',
         token,
         surface: url.searchParams.get('surface') || (token ? 'editorial' : 'public'),
-        payload: { limit: url.searchParams.get('limit'), content_type: url.searchParams.get('type') },
+        payload: {
+          limit: url.searchParams.get('limit'),
+          offset: url.searchParams.get('offset'),
+          content_type: url.searchParams.get('type'),
+        },
       });
-      sendJson(res, result.status, result.ok ? result.data : { error: result.error });
+      const extraHeaders = {};
+      if (result.ok && result.meta) {
+        extraHeaders['X-Total-Count'] = String(result.meta.total);
+        const { total, limit, offset } = result.meta;
+        const linkParts = [];
+        if (offset + limit < total) {
+          const nextOffset = offset + limit;
+          linkParts.push(`<${pathname}?limit=${limit}&offset=${nextOffset}>; rel="next"`);
+        }
+        if (offset > 0) {
+          const prevOffset = Math.max(0, offset - limit);
+          linkParts.push(`<${pathname}?limit=${limit}&offset=${prevOffset}>; rel="prev"`);
+        }
+        if (linkParts.length) extraHeaders['Link'] = linkParts.join(', ');
+      }
+      sendJson(res, result.status, result.ok ? result.data : { error: result.error }, extraHeaders);
       return;
     }
 
@@ -951,7 +1037,7 @@ async function handleRequest(req, res) {
     }
 
     if (method === 'POST' && parts.length === 4 && parts[3] === 'publish') {
-      const result = processRequest({ contractId: 'PUBLISH_CONTENT', token, contentId: parts[2] });
+      const result = processRequest({ contractId: 'PUBLISH_CONTENT', token, contentId: parts[2], payload: body });
       sendJson(res, result.status, result.ok ? result.data : { error: result.error });
       return;
     }
@@ -964,6 +1050,15 @@ async function handleRequest(req, res) {
 
     if (method === 'DELETE' && parts.length === 3) {
       const result = processRequest({ contractId: 'DELETE_CONTENT', token, contentId: parts[2] });
+      sendJson(res, result.status, result.ok ? result.data : { error: result.error });
+      return;
+    }
+
+    if (method === 'POST' && parts.length === 5 && parts[3] === 'restore') {
+      const result = processRequest({
+        contractId: 'RESTORE_CONTENT', token, contentId: parts[2],
+        payload: { revision_number: parts[4] },
+      });
       sendJson(res, result.status, result.ok ? result.data : { error: result.error });
       return;
     }
