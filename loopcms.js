@@ -1186,6 +1186,7 @@ function sendHtml(res, html) {
     'Content-Type': 'text/html; charset=utf-8',
     'X-Frame-Options': 'DENY',
     'Content-Security-Policy': "frame-ancestors 'none'; script-src 'unsafe-inline'",
+    'Cache-Control': 'no-store',
   });
   res.end(html);
 }

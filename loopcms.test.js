@@ -173,11 +173,13 @@ describe('Usability', () => {
       const html = await (await fetch(srv.baseUrl + '/admin')).text();
       const match = html.match(/<script>([\s\S]*?)<\/script>/);
       assert.ok(match, 'admin page has an inline <script> block');
-      // new Function() parses the body as the browser would (sloppy mode).
-      assert.doesNotThrow(() => new Function(match[1]),
+      const script = match[1];
+
+      // (1) The script block itself must parse as browser-grade JavaScript.
+      assert.doesNotThrow(() => new Function(script),
         'admin UI <script> must parse as valid JavaScript');
 
-      // Every function referenced from onclick / onchange in the HTML must
+      // (2) Every function referenced from onclick / onchange in the HTML must
       // exist as a top-level declaration AND be exported to window so the
       // inline handlers can resolve it from global scope.
       const handlerNames = new Set();
@@ -187,12 +189,68 @@ describe('Usability', () => {
       assert.ok(handlerNames.size >= 5, 'admin HTML has inline handlers');
       for (const name of handlerNames) {
         const declRe = new RegExp(`\\b(?:async\\s+)?function\\s+${name}\\s*\\(`);
-        assert.ok(declRe.test(match[1]),
+        assert.ok(declRe.test(script),
           `handler "${name}" referenced from an onclick is not declared in the admin script`);
         const exposeRe = new RegExp(`window\\.${name}\\s*=\\s*${name}\\b`);
-        assert.ok(exposeRe.test(match[1]),
+        assert.ok(exposeRe.test(script),
           `handler "${name}" is declared but not published to window (inline onclick cannot reach it)`);
       }
+
+      // (3) Simulate the browser's DOM eval path: every JS single-quoted string
+      // literal in the script that contains on*="..." attributes is the text
+      // that will become innerHTML at runtime. Decode each literal, pull out
+      // the static on-event attribute values, and parse them as JS. If
+      // someone writes "\\'" inside such a string, the literal evaluates to
+      // "\'" and the browser's attribute-JS parser chokes.
+      const firstJsString = (s, startAt = 0) => {
+        const q = s.indexOf("'", startAt);
+        if (q < 0) return null;
+        let i = q + 1;
+        while (i < s.length) {
+          if (s[i] === '\\') { i += 2; continue; }
+          if (s[i] === "'") return { raw: s.slice(q, i + 1), end: i + 1 };
+          i++;
+        }
+        return null;
+      };
+      const staticAttrRe = /\son(?:click|change|input|submit|keyup|keydown)="([^"]*)"/g;
+      for (const line of script.split('\n')) {
+        // Heuristic: only consider lines that build HTML with inline handlers.
+        if (!/on(?:click|change|input|submit|keyup|keydown)=/.test(line)) continue;
+        let pos = 0, lit;
+        while ((lit = firstJsString(line, pos))) {
+          pos = lit.end;
+          let decoded;
+          try { decoded = (0, eval)(lit.raw); } catch (e) { continue; }
+          if (typeof decoded !== 'string') continue;
+          let m;
+          while ((m = staticAttrRe.exec(decoded))) {
+            const attrJs = m[1];
+            // Skip handlers that are built via JS string concat across the
+            // surrounding literals — they aren't complete JS on their own.
+            if (attrJs.includes("'+") || attrJs.includes("+'") || attrJs.includes('"+') || attrJs.includes('+"')) continue;
+            assert.doesNotThrow(
+              () => new Function('return (' + attrJs + ')'),
+              `static inline handler would fail to parse at click-time: ${JSON.stringify(attrJs)}`
+            );
+          }
+        }
+      }
+    } finally {
+      await srv.cleanup();
+    }
+  });
+
+  it('U-admin-ui-no-cache: /admin response is not cached', async () => {
+    // If /admin lacks Cache-Control, browsers may keep a stale JS body after
+    // a server-side fix — reintroducing the "doLogin is not defined" symptom
+    // until the user hard-reloads. no-store prevents that.
+    const srv = await startServer();
+    try {
+      const r = await fetch(srv.baseUrl + '/admin');
+      const cc = r.headers.get('cache-control') || '';
+      assert.ok(/no-store|no-cache/.test(cc),
+        'Cache-Control must prevent stale admin HTML, got: ' + JSON.stringify(cc));
     } finally {
       await srv.cleanup();
     }
