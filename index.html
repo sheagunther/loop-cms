@@ -143,6 +143,99 @@
     color: var(--accent);
   }
 
+  /* Get Started — prominent onboarding for non-technical readers */
+  .get-started {
+    background: var(--paper-warm);
+    padding: 96px 0 104px;
+  }
+  .get-started .lede {
+    font-family: var(--serif);
+    font-size: 19px;
+    line-height: 1.6;
+    color: var(--ink-muted);
+    margin: 0 0 56px;
+    max-width: 560px;
+  }
+  .get-started .steps { margin-top: 0; }
+  .step {
+    display: grid;
+    grid-template-columns: 88px 1fr;
+    gap: 32px;
+    padding: 40px 0;
+    border-bottom: 1px solid var(--rule);
+    align-items: start;
+  }
+  .step:last-child { border-bottom: none; }
+  .step-num {
+    font-family: var(--serif);
+    font-size: 72px;
+    font-weight: 600;
+    line-height: 0.95;
+    color: var(--accent);
+    letter-spacing: -0.02em;
+    font-variant-numeric: lining-nums;
+  }
+  .step h3 {
+    font-family: var(--serif);
+    font-size: 26px;
+    font-weight: 600;
+    line-height: 1.25;
+    margin: 4px 0 12px;
+    letter-spacing: -0.01em;
+  }
+  .step p {
+    font-family: var(--serif);
+    font-size: 18px;
+    line-height: 1.65;
+    color: var(--ink-muted);
+    margin: 0 0 16px;
+  }
+  .step p:last-child { margin-bottom: 0; }
+  .step strong { color: var(--ink); font-weight: 600; }
+  .step .inline-link {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    font-weight: 500;
+  }
+  .step-code {
+    display: block;
+    background: #1a1a2e;
+    color: #e4e4eb;
+    border-radius: 6px;
+    padding: 20px 24px;
+    margin: 18px 0;
+    font-family: 'SF Mono', Monaco, Menlo, 'Cascadia Code', monospace;
+    font-size: 15px;
+    line-height: 1.9;
+    white-space: pre;
+    overflow-x: auto;
+    box-shadow: 0 12px 30px -18px rgba(26,26,46,0.3);
+  }
+  .step-code .prompt { color: var(--accent); margin-right: 10px; user-select: none; }
+  .step-code .comment { color: #8b8ba3; }
+  .step-note {
+    font-family: var(--sans);
+    font-size: 13px;
+    color: var(--ink-soft);
+    margin-top: 10px;
+    letter-spacing: 0.02em;
+  }
+  .step-cta {
+    display: inline-block;
+    margin-top: 6px;
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 500;
+    padding: 11px 22px;
+    background: var(--accent);
+    color: #fff;
+    text-decoration: none;
+    border-radius: 4px;
+    transition: background 0.15s;
+  }
+  .step-cta:hover { background: var(--accent-hover); color: #fff; }
+
   /* Features */
   .features { background: var(--paper-warm); }
   .features-grid {
@@ -256,6 +349,13 @@
     .closing { padding: 80px 0 72px; }
     .terminal { font-size: 12.5px; padding: 20px 18px; }
     .cta-secondary { display: block; margin: 16px 0 0; }
+    .get-started { padding: 72px 0 80px; }
+    .get-started .lede { font-size: 17px; margin-bottom: 36px; }
+    .step { grid-template-columns: 1fr; gap: 8px; padding: 28px 0; }
+    .step-num { font-size: 52px; }
+    .step h3 { font-size: 22px; }
+    .step p { font-size: 17px; }
+    .step-code { font-size: 14px; padding: 16px 18px; }
   }
 </style>
 </head>
@@ -271,6 +371,67 @@
   </div>
 </header>
 
+<section class="get-started">
+  <div class="wrap">
+    <div class="eyebrow">Get started</div>
+    <h2>Five steps. No terminal experience required.</h2>
+    <p class="lede">If you've never opened a terminal before, that's fine — these instructions assume you haven't. End to end, it takes about five minutes.</p>
+
+    <div class="steps">
+
+      <div class="step">
+        <div class="step-num">1</div>
+        <div>
+          <h3>Install Node.js</h3>
+          <p>Loop CMS runs on Node.js, a free runtime made by the people who built the web. Go to <a class="inline-link" href="https://nodejs.org">nodejs.org</a> and click the big green button. Install it the way you install any other app — open the download, click Next a few times, agree to the terms.</p>
+          <p class="step-note">Takes about two minutes. You only do this once, ever.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div>
+          <h3>Download loopcms.js</h3>
+          <p>Click the button below. Your browser will save a file called <strong>loopcms.js</strong> to your Downloads folder. Leave it there.</p>
+          <a class="step-cta" href="https://github.com/sheagunther/loop-cms/releases/latest/download/loopcms.js">Download loopcms.js</a>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <div>
+          <h3>Open a terminal</h3>
+          <p>This is the black window where you type commands. It's already installed — you just need to find it.</p>
+          <p><strong>On a Mac:</strong> Press <strong>Cmd+Space</strong>, type <strong>Terminal</strong>, press Enter.</p>
+          <p><strong>On Windows:</strong> Click the Start menu, type <strong>cmd</strong>, press Enter.</p>
+          <p class="step-note">A window appears with a blinking cursor. That's it. You're in.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">4</div>
+        <div>
+          <h3>Type these two lines</h3>
+          <p>Type each line exactly as shown, then press <strong>Enter</strong> after each one. The <span style="color:var(--accent);font-family:'SF Mono',Monaco,monospace">$</span> symbol is not something you type — it's just showing you where the prompt is.</p>
+          <code class="step-code"><span class="prompt">$</span>cd ~/Downloads
+<span class="prompt">$</span>node loopcms.js</code>
+          <p>You'll see the server greet you with a welcome message and a line that says <strong>Ready. Open your browser.</strong> Leave this window open — closing it stops the server.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">5</div>
+        <div>
+          <h3>Open your browser</h3>
+          <p>Go to <a class="inline-link" href="http://localhost:1312">http://localhost:1312</a>. You'll see a sign-in screen. The first-run password is <strong>admin</strong> / <strong>admin</strong> — change it as soon as you're in.</p>
+          <p class="step-note">That's it. You have a CMS running on your own machine, serving your own content, with no one in the middle.</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
 <section class="terminal-section">
   <div class="wrap">
     <div class="terminal"><span class="dim">$</span> <span class="prompt">node</span> loopcms.js
@@ -280,7 +441,7 @@
   Change your password immediately.
 
   Ready. Open your browser.
-  <span class="ok">http://localhost:3000</span>
+  <span class="ok">http://localhost:1312</span>
 
   loopcms · <span class="ok">NOMINAL</span> · amber-lighthouse-42
   Content: 0 items · Proof: chain valid</div>

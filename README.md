@@ -12,7 +12,7 @@ node loopcms.js
 
 That's it. No `npm install`, no `node_modules`, no `package.json`. One file, 262 KB, zero dependencies.
 
-Open http://localhost:3000. First-run seeds an admin account (`admin` / `admin`). Change the password immediately.
+Open http://localhost:1312. First-run seeds an admin account (`admin` / `admin`). Change the password immediately.
 
 ## Development
 
