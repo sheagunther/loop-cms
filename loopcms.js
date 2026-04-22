@@ -951,11 +951,18 @@ function reqExecute(data, identity, config, req) {
     case 'DELETE_CONTENT': {
       const item = db.prepare('SELECT * FROM content WHERE id = ?').get(req.contentId);
       if (!item) return { ok: false, status: 404, error: 'Content not found' };
-      // Ghost Links — preserve outbound reference map
+      // Ghost Links — preserve outbound reference map in the vault before the
+      // row is gone. The proof entry survives the delete; the content doesn't.
       proofAppend('content.ghost_links', {
         slug: item.slug, title: item.title, tags: item.tags,
         deleted_at: new Date().toISOString()
       }, userId);
+      // Clean dependents first — content_revisions has an FK to content(id)
+      // and node:sqlite enforces FK constraints by default.
+      try {
+        db.prepare('DELETE FROM content_fts WHERE rowid = (SELECT rowid FROM content WHERE id = ?)').run(item.id);
+      } catch (e) { /* FTS best-effort */ }
+      db.prepare('DELETE FROM content_revisions WHERE content_id = ?').run(item.id);
       db.prepare('DELETE FROM content WHERE id = ?').run(item.id);
       return { ok: true, status: 200, data: { deleted: item.id, slug: item.slug } };
     }
@@ -1805,6 +1812,14 @@ function adminPage() {
   }
   .content-title:hover { color:var(--accent); }
   .content-meta { font-size:13px; color:var(--muted); margin-top:4px; }
+  .content-actions { display:flex; align-items:center; gap:12px; flex-shrink:0; }
+  .btn-delete {
+    background:none; border:none; cursor:pointer;
+    font-family:inherit; font-size:13px; font-weight:500;
+    color:var(--muted); padding:4px 8px;
+    transition:color 0.15s;
+  }
+  .btn-delete:hover { color:#dc2626; }
 
   /* ---- Login ---- */
   .login-box { max-width:400px; margin:80px auto; padding:0 16px; }
@@ -1978,7 +1993,10 @@ async function loadWriteView(main) {
       '<li class="content-item"><div><span class="content-title" onclick="editArticle(\\''+a.id+'\\')">' +
       esc(a.title) + '</span><div class="content-meta">' + (a.slug||'') + ' · ' +
       new Date(a.updated_at).toLocaleDateString() + '</div></div>' +
-      '<span class="status-badge status-'+a.status+'">' + a.status + '</span></li>'
+      '<div class="content-actions">' +
+      '<span class="status-badge status-'+a.status+'">' + a.status + '</span>' +
+      '<button class="btn-delete" data-title="'+esc(a.title)+'" onclick="deleteArticle(\\''+a.id+'\\', this.dataset.title)">Delete</button>' +
+      '</div></li>'
     ).join('') : '<li>No content yet</li>') + '</ul></div>';
 }
 
@@ -2042,6 +2060,19 @@ async function publishArticle(id) {
   const d = await r.json();
   if (r.ok) { toast('Published! The article is now live.','success'); showView('write'); }
   else { toast(d.error||'Publish failed','error'); }
+}
+
+async function deleteArticle(id, title) {
+  if (!confirm('Delete "'+title+'"?\\n\\nThis cannot be undone.')) return;
+  const r = await apiFetch('/api/content/'+id, {method:'DELETE'});
+  if (r.ok) {
+    toast('Deleted','success');
+    loadWriteView(document.getElementById('main-content'));
+  } else {
+    let msg = 'Delete failed';
+    try { msg = (await r.json()).error || msg; } catch(e) {}
+    toast(msg,'error');
+  }
 }
 
 async function loadUploadView(main) {
@@ -2141,6 +2172,7 @@ window.newArticle = newArticle;
 window.editArticle = editArticle;
 window.saveArticle = saveArticle;
 window.publishArticle = publishArticle;
+window.deleteArticle = deleteArticle;
 window.uploadFile = uploadFile;
 window.timeTravelPreview = timeTravelPreview;
 window.applyRolePermissions = applyRolePermissions;
