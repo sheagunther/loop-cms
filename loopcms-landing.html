@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Loop CMS — One file. One command. Never loses data.</title>
+<meta name="description" content="A CMS that starts with one file and one command. Content sanitization, revision history, time travel, and a Proof Vault that makes data loss structurally impossible.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,700;1,8..60,400&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #1a1a1a;
+    --paper: #faf8f5;
+    --warm: #c4501a;
+    --warm-light: #f5e6dc;
+    --muted: #6b6560;
+    --border: #e8e2da;
+    --code-bg: #1e1e2e;
+    --code-fg: #cdd6f4;
+    --code-green: #a6e3a1;
+    --code-blue: #89b4fa;
+    --code-yellow: #f9e2af;
+    --code-comment: #6c7086;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html { 
+    font-size: 18px; 
+    scroll-behavior: smooth;
+    background: var(--paper);
+  }
+
+  body {
+    font-family: 'Source Serif 4', Georgia, serif;
+    color: var(--ink);
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- HERO ---- */
+  .hero {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 4rem 2rem;
+    max-width: 820px;
+    margin: 0 auto;
+    position: relative;
+  }
+
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 50%;
+    transform: translateX(-50%);
+    width: 100vw;
+    height: 100%;
+    background: linear-gradient(180deg, var(--paper) 0%, #f3efe8 100%);
+    z-index: -1;
+  }
+
+  .hero-badge {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--warm);
+    margin-bottom: 2rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .hero-badge::before {
+    content: '';
+    width: 28px;
+    height: 2px;
+    background: var(--warm);
+  }
+
+  h1 {
+    font-size: 3.2rem;
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    margin-bottom: 1.5rem;
+    color: var(--ink);
+  }
+
+  h1 em {
+    font-style: italic;
+    color: var(--warm);
+  }
+
+  .hero-sub {
+    font-size: 1.15rem;
+    color: var(--muted);
+    max-width: 600px;
+    margin-bottom: 2.5rem;
+  }
+
+  .hero-actions {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .btn-primary {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.88rem;
+    font-weight: 600;
+    background: var(--warm);
+    color: white;
+    border: none;
+    padding: 0.85rem 2rem;
+    border-radius: 6px;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.2s, transform 0.15s;
+    display: inline-block;
+  }
+
+  .btn-primary:hover {
+    background: #a84315;
+    transform: translateY(-1px);
+  }
+
+  .btn-secondary {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.88rem;
+    font-weight: 500;
+    color: var(--muted);
+    text-decoration: none;
+    padding: 0.85rem 1.5rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    transition: border-color 0.2s, color 0.2s;
+  }
+
+  .btn-secondary:hover {
+    border-color: var(--ink);
+    color: var(--ink);
+  }
+
+  .hero-size {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.78rem;
+    color: var(--muted);
+    margin-top: 0.75rem;
+  }
+
+  /* ---- TERMINAL ---- */
+  .terminal-section {
+    padding: 0 2rem 6rem;
+    max-width: 820px;
+    margin: 0 auto;
+  }
+
+  .terminal {
+    background: var(--code-bg);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 25px 60px rgba(0,0,0,0.15), 0 4px 12px rgba(0,0,0,0.1);
+  }
+
+  .terminal-bar {
+    padding: 14px 18px;
+    display: flex;
+    gap: 8px;
+    background: #181825;
+  }
+
+  .terminal-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+  }
+
+  .terminal-dot:nth-child(1) { background: #f38ba8; }
+  .terminal-dot:nth-child(2) { background: #f9e2af; }
+  .terminal-dot:nth-child(3) { background: #a6e3a1; }
+
+  .terminal-body {
+    padding: 1.5rem 1.8rem 2rem;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.82rem;
+    line-height: 1.8;
+    color: var(--code-fg);
+    overflow-x: auto;
+  }
+
+  .terminal-body .prompt { color: var(--code-green); }
+  .terminal-body .cmd { color: var(--code-fg); }
+  .terminal-body .output { color: var(--code-comment); }
+  .terminal-body .highlight { color: var(--code-yellow); }
+  .terminal-body .accent { color: var(--code-blue); }
+
+  /* ---- ORIGIN ---- */
+  .origin {
+    padding: 6rem 2rem;
+    max-width: 820px;
+    margin: 0 auto;
+    border-top: 1px solid var(--border);
+  }
+
+  .section-label {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--warm);
+    margin-bottom: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .section-label::before {
+    content: '';
+    width: 20px;
+    height: 2px;
+    background: var(--warm);
+  }
+
+  .origin p {
+    font-size: 1.05rem;
+    color: var(--muted);
+    margin-bottom: 1.5rem;
+    max-width: 640px;
+  }
+
+  .origin p:first-of-type {
+    font-size: 1.2rem;
+    color: var(--ink);
+  }
+
+  /* ---- FEATURES ---- */
+  .features {
+    padding: 6rem 2rem;
+    max-width: 960px;
+    margin: 0 auto;
+    border-top: 1px solid var(--border);
+  }
+
+  .features h2 {
+    font-size: 2rem;
+    font-weight: 700;
+    margin-bottom: 3rem;
+    letter-spacing: -0.01em;
+  }
+
+  .feature-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2.5rem 3rem;
+  }
+
+  .feature {
+    padding-left: 1.2rem;
+    border-left: 2px solid var(--border);
+  }
+
+  .feature:hover {
+    border-left-color: var(--warm);
+  }
+
+  .feature h3 {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 0.4rem;
+  }
+
+  .feature p {
+    font-size: 0.88rem;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  /* ---- REFUSALS ---- */
+  .refusals {
+    padding: 6rem 2rem;
+    max-width: 820px;
+    margin: 0 auto;
+    border-top: 1px solid var(--border);
+  }
+
+  .refusals h2 {
+    font-size: 2rem;
+    font-weight: 700;
+    margin-bottom: 2.5rem;
+  }
+
+  .refusal-item {
+    margin-bottom: 2rem;
+    padding-bottom: 2rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .refusal-item:last-child {
+    border-bottom: none;
+  }
+
+  .refusal-item strong {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.95rem;
+    font-weight: 600;
+    display: block;
+    margin-bottom: 0.3rem;
+  }
+
+  .refusal-item p {
+    font-size: 0.92rem;
+    color: var(--muted);
+    max-width: 640px;
+  }
+
+  /* ---- CTA ---- */
+  .cta {
+    padding: 8rem 2rem;
+    text-align: center;
+    border-top: 1px solid var(--border);
+    position: relative;
+  }
+
+  .cta::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 50%;
+    transform: translateX(-50%);
+    width: 100vw;
+    height: 100%;
+    background: linear-gradient(180deg, var(--paper) 0%, #f0ebe3 100%);
+    z-index: -1;
+  }
+
+  .cta h2 {
+    font-size: 2.4rem;
+    font-weight: 700;
+    margin-bottom: 1rem;
+    letter-spacing: -0.02em;
+  }
+
+  .cta p {
+    font-size: 1.05rem;
+    color: var(--muted);
+    margin-bottom: 2.5rem;
+  }
+
+  /* ---- FOOTER ---- */
+  footer {
+    padding: 3rem 2rem;
+    text-align: center;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+
+  footer a {
+    color: var(--warm);
+    text-decoration: none;
+  }
+
+  /* ---- RESPONSIVE ---- */
+  @media (max-width: 768px) {
+    html { font-size: 16px; }
+    h1 { font-size: 2.2rem; }
+    .feature-grid { grid-template-columns: 1fr; }
+    .hero { min-height: auto; padding: 3rem 1.5rem 4rem; }
+    .terminal-body { font-size: 0.72rem; }
+  }
+
+  /* ---- ANIMATIONS ---- */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .hero-badge, h1, .hero-sub, .hero-actions, .hero-size {
+    animation: fadeUp 0.6s ease-out both;
+  }
+
+  .hero-badge { animation-delay: 0.1s; }
+  h1 { animation-delay: 0.2s; }
+  .hero-sub { animation-delay: 0.35s; }
+  .hero-actions { animation-delay: 0.5s; }
+  .hero-size { animation-delay: 0.6s; }
+
+  .terminal {
+    animation: fadeUp 0.7s ease-out 0.3s both;
+  }
+</style>
+</head>
+<body>
+
+  <!-- HERO -->
+  <section class="hero">
+    <div class="hero-badge">Loop CMS</div>
+    <h1>One file. One command.<br>Your content is <em>yours</em>.</h1>
+    <p class="hero-sub">A CMS that starts in sixty seconds, sanitizes every input, tracks every revision, and makes data loss structurally impossible. No plugins. No database server. No weekends lost to infrastructure.</p>
+    <div class="hero-actions">
+      <a href="https://github.com/sheagunther/loop-cms/releases/latest" class="btn-primary">Download Loop CMS</a>
+      <a href="https://github.com/sheagunther/loop-cms" class="btn-secondary">View on GitHub</a>
+    </div>
+    <p class="hero-size">262 KB · Node.js · Zero dependencies · CC BY-NC 4.0</p>
+  </section>
+
+  <!-- TERMINAL -->
+  <section class="terminal-section">
+    <div class="terminal">
+      <div class="terminal-bar">
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+      </div>
+      <div class="terminal-body">
+        <span class="prompt">$</span> <span class="cmd">node loopcms.js</span><br><br>
+        <span class="output">&nbsp;&nbsp;Welcome to Loop CMS.</span><br>
+        <span class="output">&nbsp;&nbsp;Default login: admin / admin</span><br><br>
+        <span class="output">&nbsp;&nbsp;Ready. Open your browser.</span><br>
+        <span class="output">&nbsp;&nbsp;<span class="accent">http://localhost:3000</span></span><br><br>
+        <span class="output">&nbsp;&nbsp;loopcms · <span class="highlight">NOMINAL</span> · <span class="highlight">silver-pinnacle-16</span></span><br>
+        <span class="output">&nbsp;&nbsp;Content: 0 items · Proof: chain valid</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ORIGIN -->
+  <section class="origin">
+    <div class="section-label">Why this exists</div>
+    <p>Before the word "blog" existed, there was a hand-rolled website. It lived on shared hosting for a year or two. Then the hosting company lost all the data. Not hacked. Not corrupted. Lost. Every page, every post, every word.</p>
+    <p>That was the first wound. Every CMS since has been a compromise between power and friction. Complicated setup. Complicated staging. Complicated deployment. The tools that protect your data make you fight to use them. The tools that are easy to use don't protect your data.</p>
+    <p>Loop CMS exists because data loss is betrayal, complexity is friction, and beauty is non-negotiable.</p>
+  </section>
+
+  <!-- FEATURES -->
+  <section class="features">
+    <div class="section-label">What you get</div>
+    <h2>Five buttons. Everything underneath.</h2>
+    <div class="feature-grid">
+      <div class="feature">
+        <h3>Proof Vault</h3>
+        <p>Append-only audit trail with a hash chain. Every write is logged, sequenced, and tamper-evident. The system that lost everything once made a promise: never again.</p>
+      </div>
+      <div class="feature">
+        <h3>Time Travel</h3>
+        <p>See your entire site as it looked last Tuesday. Not a backup restore — a read query. Add <code>?at=2026-03-15</code> to any API call.</p>
+      </div>
+      <div class="feature">
+        <h3>Content Seismograph</h3>
+        <p>Before you press Publish, see what's about to happen. Sitemap update, RSS feed, webhook targets, cache invalidation — all visible before you confirm.</p>
+      </div>
+      <div class="feature">
+        <h3>Déjà Vu</h3>
+        <p>At 500 articles across 3 editors, nobody remembers everything. The CMS catches near-duplicates before you publish them.</p>
+      </div>
+      <div class="feature">
+        <h3>Constellation Fingerprint</h3>
+        <p>Every deployment gets a name you can remember. Not "version 47." <em>amber-lighthouse-42.</em> Say it in a meeting. Everyone knows what you mean.</p>
+      </div>
+      <div class="feature">
+        <h3>Stranger Walk</h3>
+        <p>The CMS navigates its own public surface on a schedule. Every URL, every image. Broken references caught before any visitor sees them.</p>
+      </div>
+      <div class="feature">
+        <h3>Content Sanitization</h3>
+        <p>Paste anything. Script tags, iframes, event handlers — stripped and cleaned. The CMS tells you what it did without scolding. Every input, every time.</p>
+      </div>
+      <div class="feature">
+        <h3>Headless REST API</h3>
+        <p>The same content that powers the admin UI is available as JSON. <code>curl /api/content/articles</code>. Pagination, field selection, full-text search, temporal queries.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- REFUSALS -->
+  <section class="refusals">
+    <div class="section-label">What we refuse</div>
+    <h2>This CMS will never:</h2>
+    <div class="refusal-item">
+      <strong>Be boring.</strong>
+      <p>Content Weather reads like prose. Deployments have names. The Publish button shows you what's about to happen. Delight is structural, not decorative.</p>
+    </div>
+    <div class="refusal-item">
+      <strong>Silently lose data.</strong>
+      <p>The Proof Vault is append-only with a hash chain. Revisions cap but never discard without notice. The architecture that lost sheagunther.org would be structurally impossible here.</p>
+    </div>
+    <div class="refusal-item">
+      <strong>Gate security behind a paywall.</strong>
+      <p>Content sanitization, CSRF protection, rate limiting, RBAC, EXIF stripping, SVG sanitization — all ship in the single file. Security is a floor, not a feature tier.</p>
+    </div>
+    <div class="refusal-item">
+      <strong>Make you fight the tool.</strong>
+      <p>One file. One command. Five buttons. No plugin conflicts. No database migration. No PHP version mismatch. No lost weekends.</p>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta">
+    <h2>Sixty seconds to your first article.</h2>
+    <p>Download one file. Run one command. Publish.</p>
+    <a href="https://github.com/sheagunther/loop-cms/releases/latest" class="btn-primary">Download Loop CMS</a>
+  </section>
+
+  <!-- FOOTER -->
+  <footer>
+    <p>Loop CMS · Built in New Gloucester, Maine · <a href="https://github.com/sheagunther/loop-cms">GitHub</a> · CC BY-NC 4.0</p>
+    <p style="margin-top: 0.5rem;">Made by <a href="https://sheagunther.com">Shea Gunther</a> · Powered by Loop MMT™</p>
+  </footer>
+
+</body>
+</html>
