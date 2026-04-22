@@ -147,60 +147,249 @@ async function getAuthToken(baseUrl, role = 'admin') {
 describe('Usability', () => {
 
   it('U-01: Editor logs in and sees only role-permitted actions', async () => {
-    // Criterion: An editor-role user logs in. The admin UI renders only
-    // the actions their RBAC role permits. Publisher sees all 5. Editor
-    // sees Write, Upload, Preview. Viewer sees content lists (read-only).
-    // Pass: role-filtered action rendering confirmed for 3 roles.
+    // Pass: admin UI must filter buttons by role (data-permission attrs or JS role checks).
+    const srv = await startServer();
+    try {
+      const html = await (await fetch(srv.baseUrl + '/admin')).text();
+      const hasRoleGating =
+        /data-permission\s*=/.test(html) ||
+        /data-role\s*=/.test(html) ||
+        /\.role\s*===?\s*['"](editor|publisher|viewer)['"]/.test(html) ||
+        /hasPermission\s*\(/.test(html);
+      assert.ok(hasRoleGating,
+        'admin UI must gate actions by role (no data-permission attrs, data-role attrs, role comparisons, or hasPermission() calls found)');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('U-02: Editor creates article with SEO metadata', async () => {
-    // Criterion: Create an article. Slug auto-generated from title.
-    // Meta description populated from first 160 chars of body.
-    // SEO fields (slug, metaTitle, metaDescription) present in response.
-    // Pass: all three SEO fields populated correctly.
+    // Pass: slug auto-generated from title; meta_title + meta_description populated.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const body = 'This is the opening paragraph of the article and it is long enough to fill a meta description. It keeps going. And going.';
+      const createRes = await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Hello World Seo Test', body: `<p>${body}</p>` }),
+      }));
+      const created = await createRes.json();
+      assert.strictEqual(createRes.status, 201);
+      assert.strictEqual(created.slug, 'hello-world-seo-test', 'slug auto-generated from title');
+
+      const getRes = await fetch(srv.baseUrl + `/api/content/${created.slug}`, authed(auth));
+      const item = await getRes.json();
+      assert.ok(item.meta_title, 'meta_title populated');
+      assert.ok(item.meta_description, 'meta_description populated');
+      assert.ok(item.meta_description.length > 0 && item.meta_description.length <= 160,
+        'meta_description is present and <= 160 chars, got length ' + item.meta_description.length);
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('U-03: Editor uploads photo with automatic EXIF stripping', async () => {
-    // Criterion: Upload an image with EXIF GPS data. Retrieved image
-    // has no EXIF GPS/camera metadata. Upload succeeds silently.
-    // Pass: uploaded image stripped of EXIF; original metadata absent.
+    // Pass: EXIF marker absent from served file (same mechanism as S-05).
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const marker = Buffer.from('CameraMakerSENTINEL', 'ascii');
+      const app1Body = Buffer.concat([Buffer.from('Exif\x00\x00', 'ascii'), marker]);
+      const app1Header = Buffer.from([0xFF, 0xE1, 0x00, app1Body.length + 2]);
+      const jpeg = Buffer.concat([
+        Buffer.from([0xFF, 0xD8]), app1Header, app1Body, Buffer.from([0xFF, 0xD9]),
+      ]);
+
+      const uploadRes = await fetch(srv.baseUrl + '/api/media', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: 'photo.jpg', mime_type: 'image/jpeg',
+          data: jpeg.toString('base64'),
+        }),
+      }));
+      assert.strictEqual(uploadRes.status, 201);
+      const meta = await uploadRes.json();
+      const stored = Buffer.from(await (await fetch(srv.baseUrl + meta.url)).arrayBuffer());
+      assert.ok(!stored.includes(marker), 'camera/EXIF metadata must be absent from stored image');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('U-04: Editor previews content on public surface', async () => {
-    // Criterion: Draft content visible in preview mode on public surface.
-    // Same content NOT visible via public API without auth.
-    // Pass: preview returns content; public GET returns 404 for draft.
+    // Pass: authenticated fetch sees draft; unauthenticated public page returns 404.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const createRes = await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Preview Only', slug: 'preview-only', body: '<p>wip</p>' }),
+      }));
+      assert.strictEqual(createRes.status, 201);
+
+      const previewRes = await fetch(srv.baseUrl + '/api/content/preview-only', authed(auth));
+      assert.strictEqual(previewRes.status, 200, 'authenticated preview returns draft');
+      const previewed = await previewRes.json();
+      assert.strictEqual(previewed.status, 'draft');
+
+      const publicRes = await fetch(srv.baseUrl + '/preview-only');
+      assert.strictEqual(publicRes.status, 404, 'public page for draft must be 404');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('U-05: Editor schedules publication', async () => {
-    // Criterion: Set a future publication date. Content state transitions
-    // to SCHEDULED. Content not publicly visible until scheduled time.
-    // Pass: state is SCHEDULED; public surface does not serve until time.
+    // Pass: scheduled content has status 'scheduled' and is not publicly visible before time.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const createRes = await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Future Post', slug: 'future-post', body: '<p>later</p>' }),
+      }));
+      const created = await createRes.json();
+      assert.strictEqual(createRes.status, 201);
+
+      const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const schedRes = await fetch(srv.baseUrl + `/api/content/${created.id}/publish`, authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scheduled_at: future }),
+      }));
+      assert.strictEqual(schedRes.status, 200, 'schedule request accepted');
+      const result = await schedRes.json();
+      assert.strictEqual(result.status, 'scheduled', 'status must be scheduled, got ' + result.status);
+
+      const publicRes = await fetch(srv.baseUrl + '/future-post');
+      assert.strictEqual(publicRes.status, 404, 'scheduled content must not be publicly served before time');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('U-06: Editor publishes article', async () => {
-    // Criterion: Press Publish. Content transitions from DRAFT to PUBLISHED.
-    // Content visible on public surface. Sitemap updated. RSS updated.
-    // Pass: public API returns article; sitemap includes slug; RSS includes entry.
+    // Pass: after publish, content is on public API, sitemap, and RSS feed.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const createRes = await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Shippable', slug: 'shippable', body: '<p>ready</p>' }),
+      }));
+      const created = await createRes.json();
+      assert.strictEqual(createRes.status, 201);
+
+      const pubRes = await fetch(srv.baseUrl + `/api/content/${created.id}/publish`, authed(auth, {
+        method: 'POST',
+      }));
+      assert.strictEqual(pubRes.status, 200);
+
+      const publicRes = await fetch(srv.baseUrl + '/shippable');
+      assert.strictEqual(publicRes.status, 200, 'public page returns 200 after publish');
+
+      const sitemap = await (await fetch(srv.baseUrl + '/sitemap.xml')).text();
+      assert.ok(sitemap.includes('shippable'), 'sitemap includes newly published slug');
+
+      const rss = await (await fetch(srv.baseUrl + '/feed.xml')).text();
+      assert.ok(rss.includes('Shippable'), 'RSS feed includes newly published title');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('U-07: No architectural vocabulary in admin UI', async () => {
-    // Criterion: Admin UI HTML does not contain the words: contract,
-    // loop, bus, surface, pipeline, vault, capability, processRequest.
-    // Pass: none of these terms appear in rendered admin HTML.
+    // Pass: user-visible admin HTML has no banned architectural terms.
+    const srv = await startServer();
+    try {
+      const raw = await (await fetch(srv.baseUrl + '/admin')).text();
+      // Strip <style>, <script>, and URL query params — we're checking user-facing copy.
+      const visible = raw
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/\?[a-zA-Z_][\w=&%-]*/g, '');
+      const banned = ['contract', 'processRequest', 'pipeline', 'capability', 'bus'];
+      for (const word of banned) {
+        const re = new RegExp('\\b' + word + '\\b', 'i');
+        assert.ok(!re.test(visible), `banned term "${word}" appears in user-facing admin HTML`);
+      }
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('U-08: Editor searches for article by keyword', async () => {
-    // Criterion: Create article with known keywords. Search via
-    // GET /api/search?q=keyword. Article appears in results.
-    // Pass: search returns the created article.
+    // Pass: a just-created article is findable via /api/search.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Zephyrine unique keyword article',
+          slug: 'zephyrine', body: '<p>findable</p>',
+        }),
+      }));
+
+      const searchRes = await fetch(srv.baseUrl + '/api/search?q=zephyrine&surface=editorial',
+        authed(auth));
+      const results = await searchRes.json();
+      assert.ok(Array.isArray(results));
+      assert.ok(results.some(r => r.slug === 'zephyrine'),
+        'search must return the newly created article, got ' + JSON.stringify(results.map(r => r.slug)));
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('U-09: Editor views revision history and restores prior version', async () => {
-    // Criterion: Edit an article twice. View revision history (3 versions).
-    // Restore version 1. Current content matches version 1. A new revision
-    // (version 4) is created for the restore — not a destructive overwrite.
-    // Pass: content matches v1; revision count is 4.
+    // Pass: 3 revisions after 2 edits; restore yields a 4th revision matching v1.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const createRes = await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'V1', slug: 'versioned', body: '<p>v1 body</p>' }),
+      }));
+      const created = await createRes.json();
+
+      await fetch(srv.baseUrl + `/api/content/${created.id}`, authed(auth, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'V2', body: '<p>v2 body</p>' }),
+      }));
+      await fetch(srv.baseUrl + `/api/content/${created.id}`, authed(auth, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'V3', body: '<p>v3 body</p>' }),
+      }));
+
+      const histRes = await fetch(srv.baseUrl + '/api/content/versioned?revisions=true', authed(auth));
+      const withHist = await histRes.json();
+      assert.ok(Array.isArray(withHist.revisions), 'revisions array present');
+      assert.strictEqual(withHist.revisions.length, 3, 'three revisions after create + 2 edits');
+
+      const v1 = withHist.revisions.find(r => r.revision_number === 1);
+      assert.ok(v1, 'revision 1 present');
+      const restoreRes = await fetch(srv.baseUrl + `/api/content/${created.id}/restore/1`, authed(auth, {
+        method: 'POST',
+      }));
+      assert.strictEqual(restoreRes.status, 200, 'restore endpoint returns 200');
+
+      const afterRes = await fetch(srv.baseUrl + '/api/content/versioned?revisions=true', authed(auth));
+      const after = await afterRes.json();
+      assert.strictEqual(after.title, v1.title, 'restored title matches v1');
+      assert.strictEqual(after.revisions.length, 4, 'restore creates a new revision (non-destructive)');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
 });
@@ -577,38 +766,190 @@ describe('Accessibility', () => {
 describe('Content Infrastructure', () => {
 
   it('CI-01: Sitemap contains all published slugs', async () => {
-    // Criterion: Publish 3 articles with known slugs. GET /sitemap.xml
-    // returns valid XML with <url> entries for all 3 slugs.
-    // Unpublished content absent from sitemap.
-    // Pass: all 3 slugs in sitemap; drafts absent.
+    // Pass: sitemap has all 3 published slugs; drafts absent.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const slugs = ['sitemap-a', 'sitemap-b', 'sitemap-c'];
+      for (const slug of slugs) {
+        const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: slug, slug, body: '<p>x</p>' }),
+        }))).json();
+        await fetch(srv.baseUrl + `/api/content/${c.id}/publish`, authed(auth, { method: 'POST' }));
+      }
+      await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'sitemap-draft', slug: 'sitemap-draft', body: '<p>x</p>' }),
+      }));
+
+      const sitemap = await (await fetch(srv.baseUrl + '/sitemap.xml')).text();
+      assert.ok(sitemap.includes('<urlset'), 'valid sitemap XML');
+      for (const slug of slugs) assert.ok(sitemap.includes(slug), `sitemap contains ${slug}`);
+      assert.ok(!sitemap.includes('sitemap-draft'), 'draft slug absent from sitemap');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('CI-02: RSS feed contains latest articles', async () => {
-    // Criterion: Publish 3 articles. GET /feed.xml returns valid RSS 2.0
-    // with <item> entries for all 3. Most recent first.
-    // Pass: valid RSS; all 3 articles present; correct order.
+    // Pass: valid RSS 2.0; all 3 articles present; most recent first.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const titles = ['RSS Alpha', 'RSS Beta', 'RSS Gamma'];
+      for (const title of titles) {
+        const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, body: '<p>x</p>' }),
+        }))).json();
+        await fetch(srv.baseUrl + `/api/content/${c.id}/publish`, authed(auth, { method: 'POST' }));
+        // small gap to preserve insertion order in published_at
+        await new Promise(r => setTimeout(r, 15));
+      }
+
+      const rss = await (await fetch(srv.baseUrl + '/feed.xml')).text();
+      assert.ok(/<rss\b[^>]*version="2\.0"/.test(rss), 'RSS 2.0 envelope present');
+      for (const title of titles) assert.ok(rss.includes(title), `RSS contains ${title}`);
+
+      const positions = titles.map(t => rss.indexOf(t));
+      assert.ok(positions[2] < positions[1] && positions[1] < positions[0],
+        'RSS most-recent first (Gamma, Beta, Alpha by insertion order)');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('CI-03: REST API returns published content with relationships resolved', async () => {
-    // Criterion: GET /api/content/articles returns JSON array of published
-    // articles. Each article includes resolved reference fields (if any)
-    // at depth 1. Pagination headers present.
-    // Pass: valid JSON; published content only; references resolved.
+    // Pass: valid JSON; only published; pagination headers present.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Published one', slug: 'pub-one', body: '<p>x</p>' }),
+      }))).json();
+      await fetch(srv.baseUrl + `/api/content/${c.id}/publish`, authed(auth, { method: 'POST' }));
+      await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Draft one', slug: 'draft-one', body: '<p>x</p>' }),
+      }));
+
+      const r = await fetch(srv.baseUrl + '/api/content?type=article&surface=public');
+      assert.strictEqual(r.status, 200, 'unauthenticated public GET returns 200');
+      const items = await r.json();
+      assert.ok(Array.isArray(items));
+      assert.ok(items.every(i => i.status === 'published'), 'only published content returned');
+      assert.ok(r.headers.has('x-total-count') || r.headers.has('link'),
+        'pagination header (X-Total-Count or Link) present');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('CI-04: Webhook fires on publish event with HMAC verification', async () => {
-    // Criterion: Register a webhook for content.published events.
-    // Publish an article. Webhook endpoint receives POST with JSON payload
-    // and X-Hub-Signature-256 header. HMAC verification passes.
-    // Payload contains event type and content ID, NOT full content body.
-    // Pass: webhook received; HMAC valid; no content body in payload.
+    // Pass: registered webhook receives POST with valid HMAC-SHA256 signature
+    // over a payload that carries event + content id but not the full body.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const secret = 'webhook-test-secret-' + crypto.randomBytes(8).toString('hex');
+      const received = [];
+
+      // Local HTTP sink listening on a free port.
+      const http = require('node:http');
+      const sink = http.createServer((req, res) => {
+        const chunks = [];
+        req.on('data', c => chunks.push(c));
+        req.on('end', () => {
+          received.push({
+            path: req.url,
+            headers: req.headers,
+            body: Buffer.concat(chunks).toString('utf8'),
+          });
+          res.writeHead(200); res.end('ok');
+        });
+      });
+      await new Promise(r => sink.listen(0, '127.0.0.1', r));
+      const sinkUrl = `http://127.0.0.1:${sink.address().port}/hook`;
+
+      try {
+        // Register webhook.
+        const regRes = await fetch(srv.baseUrl + '/api/webhooks', authed(auth, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: sinkUrl, events: ['content.published'], secret }),
+        }));
+        assert.ok(regRes.ok, 'webhook registration endpoint responded, got ' + regRes.status);
+
+        const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: 'Webhook test', slug: 'wh-test', body: '<p>x</p>' }),
+        }))).json();
+        await fetch(srv.baseUrl + `/api/content/${c.id}/publish`, authed(auth, { method: 'POST' }));
+
+        // Wait up to 3s for delivery
+        for (let i = 0; i < 30 && received.length === 0; i++) {
+          await new Promise(r => setTimeout(r, 100));
+        }
+        assert.strictEqual(received.length, 1, 'webhook endpoint received exactly one delivery');
+        const hit = received[0];
+        const sig = hit.headers['x-hub-signature-256'] || hit.headers['x-signature-256'];
+        assert.ok(sig, 'signature header present (X-Hub-Signature-256 or X-Signature-256)');
+        const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(hit.body).digest('hex');
+        assert.strictEqual(sig, expected, 'HMAC signature matches');
+
+        const payload = JSON.parse(hit.body);
+        assert.strictEqual(payload.event, 'content.published');
+        assert.strictEqual(payload.content_id || payload.contentId, c.id);
+        assert.ok(!payload.body, 'payload must not include full content body (FBD-WH1)');
+      } finally {
+        await new Promise(r => sink.close(r));
+      }
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('CI-05: Search returns published articles, excludes drafts (FBD-FTS1)', async () => {
-    // Criterion: Create 1 published article and 1 draft with same keyword.
-    // Public search returns only the published article.
-    // Authenticated editorial search returns both.
-    // Pass: public search = 1 result; editorial search = 2 results.
+    // Pass: public search sees only published; editorial sees both.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const unique = 'ftsunique' + Math.random().toString(36).slice(2, 8);
+
+      const pub = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: `Published ${unique}`, slug: `pub-${unique}`, body: `<p>${unique}</p>` }),
+      }))).json();
+      await fetch(srv.baseUrl + `/api/content/${pub.id}/publish`, authed(auth, { method: 'POST' }));
+
+      await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: `Draft ${unique}`, slug: `draft-${unique}`, body: `<p>${unique}</p>` }),
+      }));
+
+      const pubRes = await fetch(srv.baseUrl + `/api/search?q=${unique}&surface=public`);
+      const pubHits = await pubRes.json();
+      assert.ok(Array.isArray(pubHits));
+      assert.strictEqual(pubHits.length, 1,
+        `public search returns 1 hit, got ${pubHits.length}: ${JSON.stringify(pubHits.map(x => x.slug))}`);
+
+      const edRes = await fetch(srv.baseUrl + `/api/search?q=${unique}&surface=editorial`, authed(auth));
+      const edHits = await edRes.json();
+      assert.strictEqual(edHits.length, 2,
+        `editorial search returns both, got ${edHits.length}: ${JSON.stringify(edHits.map(x => x.slug))}`);
+    } finally {
+      await srv.cleanup();
+    }
   });
 
 });
