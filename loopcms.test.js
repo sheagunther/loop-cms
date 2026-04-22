@@ -163,6 +163,41 @@ describe('Usability', () => {
     }
   });
 
+  it('U-admin-ui-script-parses: admin UI inline <script> is valid JS and exposes onclick handlers', async () => {
+    // Regression guard: the admin UI is a single backtick template string on
+    // the server. A stray "\'" pattern inside that template rendered as an
+    // unescaped apostrophe in the client script, which threw a parse error
+    // and left every onclick handler with "ReferenceError: X is not defined".
+    const srv = await startServer();
+    try {
+      const html = await (await fetch(srv.baseUrl + '/admin')).text();
+      const match = html.match(/<script>([\s\S]*?)<\/script>/);
+      assert.ok(match, 'admin page has an inline <script> block');
+      // new Function() parses the body as the browser would (sloppy mode).
+      assert.doesNotThrow(() => new Function(match[1]),
+        'admin UI <script> must parse as valid JavaScript');
+
+      // Every function referenced from onclick / onchange in the HTML must
+      // exist as a top-level declaration AND be exported to window so the
+      // inline handlers can resolve it from global scope.
+      const handlerNames = new Set();
+      for (const m of html.matchAll(/on(?:click|change)="([a-zA-Z_$][\w$]*)\s*\(/g)) {
+        handlerNames.add(m[1]);
+      }
+      assert.ok(handlerNames.size >= 5, 'admin HTML has inline handlers');
+      for (const name of handlerNames) {
+        const declRe = new RegExp(`\\b(?:async\\s+)?function\\s+${name}\\s*\\(`);
+        assert.ok(declRe.test(match[1]),
+          `handler "${name}" referenced from an onclick is not declared in the admin script`);
+        const exposeRe = new RegExp(`window\\.${name}\\s*=\\s*${name}\\b`);
+        assert.ok(exposeRe.test(match[1]),
+          `handler "${name}" is declared but not published to window (inline onclick cannot reach it)`);
+      }
+    } finally {
+      await srv.cleanup();
+    }
+  });
+
   it('U-02: Editor creates article with SEO metadata', async () => {
     // Pass: slug auto-generated from title; meta_title + meta_description populated.
     const srv = await startServer();

@@ -1800,7 +1800,7 @@ async function loadWriteView(main) {
     '<h2>Content</h2><button class="btn btn-primary" onclick="newArticle()">+ New Article</button></div>' +
     '<div class="card"><ul class="content-list" id="content-list">' +
     (Array.isArray(articles) ? articles.map(a =>
-      '<li class="content-item"><div><span class="content-title" onclick="editArticle(\''+a.id+'\')">' +
+      '<li class="content-item"><div><span class="content-title" onclick="editArticle(\\''+a.id+'\\')">' +
       esc(a.title) + '</span><div class="content-meta">' + (a.slug||'') + ' · ' +
       new Date(a.updated_at).toLocaleDateString() + '</div></div>' +
       '<span class="status-badge status-'+a.status+'">' + a.status + '</span></li>'
@@ -1818,18 +1818,18 @@ function showEditor(a) {
   const main = document.getElementById('main-content');
   main.innerHTML = '<div class="card"><div style="display:flex;justify-content:space-between;margin-bottom:16px">' +
     '<h3>'+(state.editingId?'Edit':'New')+' Article</h3>' +
-    '<button class="btn btn-outline btn-sm" onclick="showView(\'write\')">Back</button></div>' +
+    '<button class="btn btn-outline btn-sm" onclick="showView(\\'write\\')">Back</button></div>' +
     '<div class="field-group"><label for="ed-title">Title</label><input id="ed-title" value="'+esc(a.title||'')+'"></div>' +
     '<div class="field-group"><label for="ed-body">Body</label><textarea id="ed-body">'+esc(a.body||'')+'</textarea></div>' +
-    '<button type="button" class="collapsible-header" onclick="document.getElementById(\'seo-panel\').classList.toggle(\'hidden\')">&#9660; SEO & Metadata</button>' +
+    '<button type="button" class="collapsible-header" onclick="document.getElementById(\\'seo-panel\\').classList.toggle(\\'hidden\\')">&#9660; SEO & Metadata</button>' +
     '<div id="seo-panel" class="hidden">' +
     '<div class="field-group"><label for="ed-slug">Slug</label><input id="ed-slug" value="'+esc(a.slug||'')+'" placeholder="auto-generated from title"></div>' +
     '<div class="field-group"><label for="ed-meta-title">Meta Title</label><input id="ed-meta-title" value="'+esc(a.meta_title||'')+'"></div>' +
     '<div class="field-group"><label for="ed-meta-desc">Meta Description</label><input id="ed-meta-desc" value="'+esc(a.meta_description||'')+'"></div>' +
-    '<div class="field-group"><label for="ed-tags">Tags (JSON array)</label><input id="ed-tags" value=\''+esc(a.tags||'[]')+'\'></div>' +
+    '<div class="field-group"><label for="ed-tags">Tags (JSON array)</label><input id="ed-tags" value=\\''+esc(a.tags||'[]')+'\\'></div>' +
     '</div>' +
     '<div style="display:flex;gap:8px;margin-top:16px"><button class="btn btn-primary" onclick="saveArticle()">Save</button>' +
-    (state.editingId && a.status!=='published' ? '<button class="btn btn-success" onclick="publishArticle(\''+a.id+'\')">Publish</button>' : '') +
+    (state.editingId && a.status!=='published' ? '<button class="btn btn-success" onclick="publishArticle(\\''+a.id+'\\')">Publish</button>' : '') +
     '</div><div id="save-note"></div></div>';
 }
 
@@ -1930,7 +1930,7 @@ async function loadPublishView(main) {
     (drafts.length ? drafts.map(a =>
       '<div class="content-item"><div><span>'+esc(a.title)+'</span>' +
       '<div class="content-meta">'+esc(a.slug||'no slug')+' · '+a.status+'</div></div>' +
-      '<button class="btn btn-sm btn-success" onclick="publishArticle(\''+a.id+'\')">Publish</button></div>'
+      '<button class="btn btn-sm btn-success" onclick="publishArticle(\\''+a.id+'\\')">Publish</button></div>'
     ).join('') : '<p style="color:var(--muted)">All content is published.</p>') + '</div>' +
     '<div class="card" style="margin-top:16px"><h3>Published</h3>' +
     (published.length ? published.map(a =>
@@ -1947,6 +1947,21 @@ function toast(msg,type) {
   (document.getElementById('toast-region') || document.body).appendChild(t);
   setTimeout(()=>t.remove(), 3000);
 }
+
+// Inline onclick handlers read from the global scope. Explicitly publish every
+// function that is referenced from an onclick="..." / onchange="..." attribute
+// so a future minifier, strict mode, or module wrapping does not silently
+// break the admin UI.
+window.doLogin = doLogin;
+window.doLogout = doLogout;
+window.showView = showView;
+window.newArticle = newArticle;
+window.editArticle = editArticle;
+window.saveArticle = saveArticle;
+window.publishArticle = publishArticle;
+window.uploadFile = uploadFile;
+window.timeTravelPreview = timeTravelPreview;
+window.applyRolePermissions = applyRolePermissions;
 </script>
 </body></html>`;
 }
