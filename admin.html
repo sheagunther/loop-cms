@@ -198,6 +198,13 @@
     transition:color 0.15s;
   }
   .btn-delete:hover { color:#dc2626; }
+  .upload-progress {
+    margin-top:10px; font-size:13px; color:var(--muted);
+    line-height:1.5; min-height:1em; font-variant-numeric:tabular-nums;
+  }
+  .upload-progress:empty { display:none; }
+  .upload-progress.is-error { color:#dc2626; }
+  .upload-progress.is-done  { color:var(--success-fg); }
 
   /* ---- Login ---- */
   .login-box { max-width:400px; margin:80px auto; padding:0 16px; }
@@ -456,8 +463,9 @@ async function deleteArticle(id, title) {
 async function loadUploadView(main) {
   const r = await apiFetch('/api/media'); const media = await r.json();
   main.innerHTML = '<h2 style="margin-bottom:16px">Media Library</h2>' +
-    '<div class="card"><div class="field-group"><label for="file-input">Upload File</label>' +
-    '<input type="file" id="file-input" onchange="uploadFile()"></div></div>' +
+    '<div class="card"><div class="field-group"><label for="file-input">Upload files</label>' +
+    '<input type="file" id="file-input" multiple onchange="uploadFiles()">' +
+    '<div id="upload-progress" class="upload-progress" aria-live="polite"></div></div></div>' +
     '<div class="card"><h3>Files</h3>' +
     (Array.isArray(media) && media.length ? media.map(m =>
       '<div class="content-item"><div><span>'+esc(m.original_name)+'</span>' +
@@ -466,19 +474,71 @@ async function loadUploadView(main) {
     ).join('') : '<p style="color:var(--muted)">No media uploaded yet.</p>') + '</div>';
 }
 
-async function uploadFile() {
+function readAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = () => reject(reader.error || new Error('read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadFiles() {
   const input = document.getElementById('file-input');
-  if (!input.files.length) return;
-  const file = input.files[0];
-  const reader = new FileReader();
-  reader.onload = async function() {
-    const base64 = reader.result.split(',')[1];
-    const r = await apiFetch('/api/media', {method:'POST', body:JSON.stringify({
-      data:base64, filename:file.name, mime_type:file.type })});
-    if (r.ok) { toast('Uploaded','success'); loadUploadView(document.getElementById('main-content')); }
-    else { toast('Upload failed','error'); }
-  };
-  reader.readAsDataURL(file);
+  const progress = document.getElementById('upload-progress');
+  if (!input || !input.files.length) return;
+
+  const files = Array.from(input.files);
+  input.disabled = true;
+  if (progress) { progress.className = 'upload-progress'; progress.textContent = ''; }
+
+  const succeeded = [];
+  const failed = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    if (progress) {
+      progress.textContent = 'Uploading ' + (i + 1) + ' of ' + files.length + ': ' + file.name;
+    }
+    try {
+      const base64 = await readAsBase64(file);
+      const r = await apiFetch('/api/media', {
+        method: 'POST',
+        body: JSON.stringify({ data: base64, filename: file.name, mime_type: file.type }),
+      });
+      if (r.ok) {
+        succeeded.push(file.name);
+      } else {
+        let reason = 'HTTP ' + r.status;
+        try { reason = (await r.json()).error || reason; } catch (e) {}
+        failed.push({ name: file.name, reason: reason });
+      }
+    } catch (e) {
+      failed.push({ name: file.name, reason: e.message || 'read failed' });
+    }
+  }
+
+  input.disabled = false;
+  input.value = '';
+
+  const s = succeeded.length, f = failed.length;
+  let summary, summaryClass, toastKind;
+  if (f === 0) {
+    summary = 'Uploaded ' + s + ' file' + (s === 1 ? '' : 's') + '.';
+    summaryClass = 'is-done'; toastKind = 'success';
+  } else if (s === 0) {
+    summary = 'All ' + f + ' upload' + (f === 1 ? '' : 's') + ' failed. ' + failed[0].reason + '.';
+    summaryClass = 'is-error'; toastKind = 'error';
+  } else {
+    summary = 'Uploaded ' + s + ' of ' + (s + f) + '. ' + f + ' failed: ' + failed.map(x => x.name).join(', ') + '.';
+    summaryClass = 'is-error'; toastKind = 'error';
+  }
+  toast(summary, toastKind);
+
+  // Refresh the Files list so new uploads appear. Re-populate the summary
+  // after the re-render since loadUploadView rewrites the card's innerHTML.
+  await loadUploadView(document.getElementById('main-content'));
+  const after = document.getElementById('upload-progress');
+  if (after) { after.className = 'upload-progress ' + summaryClass; after.textContent = summary; }
 }
 
 async function loadPreviewView(main) {
@@ -551,7 +611,7 @@ window.editArticle = editArticle;
 window.saveArticle = saveArticle;
 window.publishArticle = publishArticle;
 window.deleteArticle = deleteArticle;
-window.uploadFile = uploadFile;
+window.uploadFiles = uploadFiles;
 window.timeTravelPreview = timeTravelPreview;
 window.applyRolePermissions = applyRolePermissions;
 </script>
