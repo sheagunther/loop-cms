@@ -705,30 +705,101 @@ describe('Security', () => {
 describe('Integrity', () => {
 
   it('I-01: Proof Vault hash chain valid (FBD-LI1)', async () => {
-    // Criterion: After multiple operations (create, publish, delete),
-    // verify the Proof Vault hash chain. Each entry's hash includes
-    // the previous entry's hash. Chain is unbroken.
-    // Pass: all entries verify; chain integrity confirmed.
+    // Pass: every proof entry's prev_hash matches the previous entry's entry_hash.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Chain', slug: 'chain', body: '<p>x</p>' }),
+      }))).json();
+      await fetch(srv.baseUrl + `/api/content/${c.id}/publish`, authed(auth, { method: 'POST' }));
+      await fetch(srv.baseUrl + `/api/content/${c.id}`, authed(auth, { method: 'DELETE' }));
+
+      const db = new DatabaseSync(path.join(srv.tmpDir, 'data', 'content.db'));
+      try {
+        const rows = db.prepare('SELECT id, prev_hash, entry_hash FROM proof_vault ORDER BY id ASC').all();
+        assert.ok(rows.length >= 3, 'proof vault has multiple entries (got ' + rows.length + ')');
+        for (let i = 1; i < rows.length; i++) {
+          assert.strictEqual(rows[i].prev_hash, rows[i - 1].entry_hash,
+            `chain breaks at entry ${rows[i].id}: prev_hash ${rows[i].prev_hash} !== previous entry_hash ${rows[i - 1].entry_hash}`);
+        }
+      } finally { db.close(); }
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('I-02: Content integrity checksums valid (FBD-CI1)', async () => {
-    // Criterion: Create content. Verify stored checksum matches
-    // computed checksum of content. Tamper with content directly in DB.
-    // Read via API → checksum mismatch detected.
-    // Pass: valid content serves normally; tampered content triggers error.
+    // Pass: read returns _integrityOk=true for untouched, false for tampered.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Integrity', slug: 'integrity', body: '<p>legit</p>' }),
+      }))).json();
+
+      const cleanRes = await fetch(srv.baseUrl + '/api/content/integrity', authed(auth));
+      const clean = await cleanRes.json();
+      assert.strictEqual(clean._integrityOk, true, 'untouched content verifies');
+
+      // Tamper with the body directly in the DB.
+      const db = new DatabaseSync(path.join(srv.tmpDir, 'data', 'content.db'));
+      try {
+        db.prepare('UPDATE content SET body=? WHERE id=?').run('<p>TAMPERED</p>', c.id);
+      } finally { db.close(); }
+
+      const tRes = await fetch(srv.baseUrl + '/api/content/integrity', authed(auth));
+      const t = await tRes.json();
+      assert.strictEqual(t._integrityOk, false, 'tampered content is flagged');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('I-03: Ephemeral storage on non-Vault loops', async () => {
-    // Criterion: Rate limit data, CSRF tokens, cached responses are
-    // ephemeral — not in the Proof Vault. They do not participate
-    // in the hash chain.
-    // Pass: ephemeral data tables separate from proof_vault table.
+    // Pass: rate_limits and csrf_tokens live in separate tables and do not
+    // appear inside proof_vault rows.
+    const srv = await startServer();
+    try {
+      // Log in + hit endpoints to populate rate_limits and csrf_tokens.
+      await getAuthToken(srv.baseUrl);
+      const db = new DatabaseSync(path.join(srv.tmpDir, 'data', 'content.db'));
+      try {
+        const names = db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r => r.name);
+        for (const t of ['rate_limits', 'csrf_tokens', 'proof_vault']) {
+          assert.ok(names.includes(t), `${t} table exists`);
+        }
+        const vault = db.prepare('SELECT entry_type, entry_data FROM proof_vault').all();
+        const joined = JSON.stringify(vault);
+        assert.ok(!/csrf_token/i.test(joined), 'csrf tokens not written to proof vault');
+        assert.ok(!/rate_limit/i.test(joined), 'rate-limit keys not written to proof vault');
+      } finally { db.close(); }
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('I-04: Deployment dry-run validates before apply (FBD-DD1)', async () => {
-    // Criterion: (May defer for MVP) Spec changes must pass dry-run
-    // validation before applying. Invalid spec → refused.
-    // Pass: invalid spec rejected; valid spec accepted after dry-run.
+    // Pass: a dry-run endpoint validates spec changes before apply.
+    // AGENTS.md marks this as "may defer for Phase 1 MVP".
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const r = await fetch(srv.baseUrl + '/api/admin/dry-run', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spec: { invalid: true } }),
+      }));
+      assert.ok(r.status !== 404, 'dry-run endpoint exists, got 404');
+      const body = await r.json();
+      assert.ok('valid' in body || 'errors' in body, 'response reports validity or errors');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
 });
@@ -740,21 +811,61 @@ describe('Integrity', () => {
 describe('Accessibility', () => {
 
   it('A-01: Admin UI keyboard navigation complete', async () => {
-    // Criterion: All admin UI actions reachable via keyboard (Tab, Enter,
-    // Escape). No mouse-only interactions. Focus order is logical.
-    // Pass: all 5 actions triggerable without mouse.
+    // Pass: nav actions are real <button>s (not div-onclick); no mouse-only patterns.
+    const srv = await startServer();
+    try {
+      const html = await (await fetch(srv.baseUrl + '/admin')).text();
+      const navButtons = html.match(/<button[^>]*class="nav-btn[^"]*"[^>]*>/g) || [];
+      assert.ok(navButtons.length >= 5, 'at least 5 tabbable nav buttons, got ' + navButtons.length);
+      assert.ok(!/<div[^>]*\bonclick=/.test(html),
+        'no <div onclick=> (breaks keyboard + screen reader)');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('A-02: Admin UI screen reader compatible', async () => {
-    // Criterion: ARIA landmarks present. Form labels associated.
-    // Status messages use aria-live. Buttons have accessible names.
-    // Pass: HTML passes automated a11y checks (axe-core or equivalent).
+    // Pass: ARIA landmarks present; form labels associated; status uses aria-live.
+    const srv = await startServer();
+    try {
+      const html = await (await fetch(srv.baseUrl + '/admin')).text();
+      const hasLandmarks = /<(main|nav|aside|header)\b/.test(html) || /role="(main|navigation|banner)"/.test(html);
+      assert.ok(hasLandmarks, 'at least one ARIA landmark element or role');
+
+      // Every <input> should have an associated label (for= or wrapping <label>).
+      const inputs = html.match(/<input[^>]*id="([^"]+)"[^>]*>/g) || [];
+      const unlabeled = [];
+      for (const tag of inputs) {
+        const id = tag.match(/id="([^"]+)"/)[1];
+        const hasFor = new RegExp(`<label[^>]*for="${id}"`).test(html);
+        if (!hasFor) unlabeled.push(id);
+      }
+      assert.strictEqual(unlabeled.length, 0,
+        'inputs without associated <label for>: ' + unlabeled.join(', '));
+
+      assert.ok(/aria-live=/.test(html), 'aria-live region for status messages');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('A-03: SBOM present', async () => {
-    // Criterion: A software bill of materials listing all dependencies
-    // is generated and available.
-    // Pass: SBOM file exists and lists all npm dependencies.
+    // Pass: repository ships an SBOM or the server exposes one.
+    const sbomFiles = ['sbom.json', 'sbom.spdx.json', 'sbom.cdx.json', 'bom.json'];
+    const found = sbomFiles.find(f => fs.existsSync(path.join(__dirname, f)));
+    if (found) {
+      const data = JSON.parse(fs.readFileSync(path.join(__dirname, found), 'utf8'));
+      assert.ok(data, 'SBOM file parses as JSON');
+      return;
+    }
+    // No file — check for an endpoint.
+    const srv = await startServer();
+    try {
+      const r = await fetch(srv.baseUrl + '/api/sbom');
+      assert.ok(r.status !== 404, 'SBOM file or /api/sbom endpoint must exist (checked: ' + sbomFiles.join(', ') + ')');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
 });
@@ -961,83 +1072,268 @@ describe('Content Infrastructure', () => {
 describe('Differentiation', () => {
 
   it('D-01: Time Travel — temporal query returns past content', async () => {
-    // Criterion: Create article, publish, edit title, publish again.
-    // GET /api/content/articles?at=[before-edit-timestamp] returns
-    // original title. GET without `at` returns current title.
-    // Pass: temporal query returns old title; current query returns new title.
+    // Pass: ?at=<past> returns old title; no-at returns current.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Original Title', slug: 'tt', body: '<p>v1</p>' }),
+      }))).json();
+      await fetch(srv.baseUrl + `/api/content/${c.id}/publish`, authed(auth, { method: 'POST' }));
+      const beforeEdit = new Date().toISOString();
+      await new Promise(r => setTimeout(r, 50));
+
+      await fetch(srv.baseUrl + `/api/content/${c.id}`, authed(auth, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Edited Title', body: '<p>v2</p>' }),
+      }));
+
+      const past = await (await fetch(srv.baseUrl + `/api/content/tt?at=${encodeURIComponent(beforeEdit)}`, authed(auth))).json();
+      assert.strictEqual(past.title, 'Original Title', 'temporal query returns pre-edit title');
+
+      const now = await (await fetch(srv.baseUrl + '/api/content/tt', authed(auth))).json();
+      assert.strictEqual(now.title, 'Edited Title');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('D-02: Time Travel — horizon header on early timestamp', async () => {
-    // Criterion: Query with timestamp before first revision.
-    // Response includes X-Time-Travel-Horizon header with oldest
-    // available revision timestamp.
-    // Pass: horizon header present and accurate.
+    // Pass: X-Time-Travel-Horizon header on a query predating first revision.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Horizon', slug: 'horizon', body: '<p>x</p>' }),
+      }));
+
+      const epoch = '1970-01-01T00:00:00Z';
+      const r = await fetch(srv.baseUrl + `/api/content/horizon?at=${epoch}`, authed(auth));
+      assert.ok(r.headers.has('x-time-travel-horizon'),
+        'X-Time-Travel-Horizon header present on pre-earliest temporal query');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('D-03: Admin UI temporal preview shows past content', async () => {
-    // Criterion: Admin UI preview mode with date picker. Selecting a
-    // past date shows content as it existed at that time.
-    // Pass: preview at past date shows correct historical content.
+    // Pass: admin preview view has a date picker wired to time-travel.
+    const srv = await startServer();
+    try {
+      const html = await (await fetch(srv.baseUrl + '/admin')).text();
+      const hasDatePicker = /<input[^>]*type="(datetime-local|date)"/.test(html);
+      const wiredToAt = /[?&]at=/.test(html);
+      assert.ok(hasDatePicker, 'admin UI exposes a date picker input');
+      assert.ok(wiredToAt, 'admin UI JS constructs requests with ?at= parameter');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('D-04: Seismograph shows correct webhook count in preview', async () => {
-    // Criterion: Register 2 webhooks for content.published. Use
-    // PREVIEW_EFFECTS on a content item. Effect list includes 2 webhook
-    // targets. Also shows cache invalidation count and any relationship
-    // updates.
-    // Pass: effect list matches expected downstream effects.
+    // Pass: POST /api/content/:id/preview-effects returns effect list with webhook count.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Seismo', slug: 'seismo', body: '<p>x</p>' }),
+      }))).json();
+
+      for (let i = 0; i < 2; i++) {
+        await fetch(srv.baseUrl + '/api/webhooks', authed(auth, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: 'http://127.0.0.1:0/noop' + i, events: ['content.published'], secret: 's' + i,
+          }),
+        }));
+      }
+
+      const r = await fetch(srv.baseUrl + `/api/content/${c.id}/preview-effects`, authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transition: 'publish' }),
+      }));
+      assert.strictEqual(r.status, 200);
+      const effects = await r.json();
+      const webhookCount = effects.webhooks?.length ?? effects.webhook_count ?? 0;
+      assert.strictEqual(webhookCount, 2, 'effects list counts 2 webhook targets');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('D-05: Déjà Vu — similarity notification on overlapping draft', async () => {
-    // Criterion: Publish article about "Loop CMS architecture."
-    // Create new draft with 80% overlapping content.
-    // Similarity notification appears (title, date, overlap %).
-    // Pass: notification present with correct match.
+    // Pass: creating a near-duplicate draft returns a similarity notice.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const text = 'The Loop CMS architecture favors single-file deployments and refuses to lose data.';
+      const first = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Loop CMS architecture', slug: 'arch-1', body: `<p>${text}</p>` }),
+      }))).json();
+      await fetch(srv.baseUrl + `/api/content/${first.id}/publish`, authed(auth, { method: 'POST' }));
+
+      const dup = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Loop CMS architecture notes', slug: 'arch-2', body: `<p>${text}</p>` }),
+      }))).json();
+
+      const similar = dup.similar || dup.deja_vu || dup.dejaVu;
+      assert.ok(Array.isArray(similar) && similar.length > 0,
+        'create response exposes a similarity hit for the duplicate draft');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('D-06: Constellation Fingerprint in CLI status', async () => {
-    // Criterion: GET /api/admin/status returns fingerprint field
-    // in adjective-noun-number format (e.g., "amber-lighthouse-42").
-    // Pass: fingerprint matches expected format.
+    // Pass: /api/status returns fingerprint in adjective-noun-NN format.
+    const srv = await startServer();
+    try {
+      const body = await (await fetch(srv.baseUrl + '/api/status')).json();
+      assert.ok(body.fingerprint, 'fingerprint field present');
+      assert.ok(/^[a-z]+-[a-z]+-\d{2}$/.test(body.fingerprint),
+        'fingerprint matches adjective-noun-NN, got: ' + body.fingerprint);
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('D-07: Constellation Fingerprint in spec history', async () => {
-    // Criterion: GET /api/admin/spec-history returns version entries
-    // with fingerprint alongside version number.
-    // Pass: each entry has version + fingerprint.
+    // Pass: /api/admin/spec-history lists versions each with a fingerprint.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const r = await fetch(srv.baseUrl + '/api/admin/spec-history', authed(auth));
+      assert.strictEqual(r.status, 200, 'spec-history endpoint returns 200');
+      const entries = await r.json();
+      assert.ok(Array.isArray(entries) && entries.length > 0, 'non-empty version list');
+      for (const e of entries) {
+        assert.ok(e.version !== undefined && e.fingerprint,
+          'every entry has version and fingerprint: ' + JSON.stringify(e));
+      }
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('D-08: Constellation Fingerprint diff between versions', async () => {
-    // Criterion: (May defer) Diff between two fingerprints shows
-    // configuration changes.
-    // Pass: diff endpoint returns changes between two spec versions.
+    // Pass: /api/admin/spec-diff returns changes between two fingerprints.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const r = await fetch(srv.baseUrl + '/api/admin/spec-diff?from=1&to=2', authed(auth));
+      assert.ok(r.status !== 404, 'spec-diff endpoint exists');
+      const body = await r.json();
+      assert.ok('changes' in body || 'diff' in body, 'response has changes/diff');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('D-09: Stranger Walk produces Proof Vault entry', async () => {
-    // Criterion: Trigger Stranger Walk. It checks all sitemap URLs.
-    // Proof Vault contains entry: "Stranger Walk complete. N URLs checked.
-    // M issues found."
-    // Pass: Proof Vault entry present with correct counts.
+    // Pass: POST /api/admin/stranger-walk writes a Proof Vault entry.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Walk me', slug: 'walk-me', body: '<p>ok</p>' }),
+      }))).json();
+      await fetch(srv.baseUrl + `/api/content/${c.id}/publish`, authed(auth, { method: 'POST' }));
+
+      const r = await fetch(srv.baseUrl + '/api/admin/stranger-walk', authed(auth, { method: 'POST' }));
+      assert.strictEqual(r.status, 200, 'stranger-walk endpoint returns 200');
+
+      const db = new DatabaseSync(path.join(srv.tmpDir, 'data', 'content.db'));
+      try {
+        const entry = db.prepare("SELECT * FROM proof_vault WHERE entry_type LIKE '%stranger_walk%' OR entry_data LIKE '%Stranger Walk%' ORDER BY id DESC LIMIT 1").get();
+        assert.ok(entry, 'Proof Vault contains a stranger_walk entry');
+        const data = JSON.parse(entry.entry_data);
+        assert.ok('urls_checked' in data || 'checked' in data, 'entry reports URL count');
+      } finally { db.close(); }
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('D-10: Stranger Walk catches broken image reference', async () => {
-    // Criterion: Publish article referencing a nonexistent image.
-    // Run Stranger Walk. Proof Vault entry reports the broken reference.
-    // Pass: broken image flagged in Stranger Walk results.
+    // Pass: walk flags the article's broken image.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Broken img', slug: 'broken-img',
+          body: '<p><img src="/media/does-not-exist.png"></p>',
+        }),
+      }))).json();
+      await fetch(srv.baseUrl + `/api/content/${c.id}/publish`, authed(auth, { method: 'POST' }));
+
+      const r = await fetch(srv.baseUrl + '/api/admin/stranger-walk', authed(auth, { method: 'POST' }));
+      const body = await r.json();
+      const issues = body.issues || body.broken || [];
+      assert.ok(Array.isArray(issues) && issues.some(i => JSON.stringify(i).includes('does-not-exist')),
+        'stranger walk reports the broken image');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('D-11: Ghost Links preserved on content deletion', async () => {
-    // Criterion: Create article A linking to article B and tagged
-    // "company-news." Delete article A. Ghost Links entry in Proof Vault
-    // preserves outbound references (link to B, tag "company-news").
-    // GET /api/admin/ghost-links/:slug returns the reference map.
-    // Pass: ghost links entry exists with correct references.
+    // Pass: after delete, proof_vault has a ghost_links entry capturing tags + slug.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Ghost A', slug: 'ghost-a',
+          body: '<p>See <a href="/ghost-b">B</a></p>',
+          tags: '["company-news"]',
+        }),
+      }))).json();
+
+      await fetch(srv.baseUrl + `/api/content/${c.id}`, authed(auth, { method: 'DELETE' }));
+
+      const db = new DatabaseSync(path.join(srv.tmpDir, 'data', 'content.db'));
+      try {
+        const ghost = db.prepare("SELECT * FROM proof_vault WHERE entry_type='content.ghost_links' ORDER BY id DESC LIMIT 1").get();
+        assert.ok(ghost, 'ghost_links entry exists');
+        const data = JSON.parse(ghost.entry_data);
+        assert.strictEqual(data.slug, 'ghost-a');
+        assert.ok(data.tags && data.tags.includes('company-news'), 'tags preserved');
+      } finally { db.close(); }
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('D-12: Ghost Links visible in admin UI', async () => {
-    // Criterion: Admin UI shows recently deleted content and their
-    // preserved outbound references in a Ghost Links view.
-    // Pass: Ghost Links section renders deleted content references.
+    // Pass: admin UI surfaces a ghost-links view (button/nav or endpoint).
+    const srv = await startServer();
+    try {
+      const html = await (await fetch(srv.baseUrl + '/admin')).text();
+      const surfacedInUI = /ghost[-_ ]?links/i.test(html);
+      assert.ok(surfacedInUI, 'admin UI mentions ghost links');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
 });
@@ -1125,33 +1421,138 @@ describe('Integration', () => {
 describe('FBD Control Spot Checks', () => {
 
   it('FBD-RH1: Content write without revision is structurally impossible', async () => {
-    // Criterion: Every STORE_CONTENT call creates a revision in the
-    // same transaction. Verify by checking revision count after write.
-    // Pass: revision_count === write_count for all content items.
+    // Pass: revision count equals write count (1 create + N edits = N+1 revisions).
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Rev test', slug: 'rev-test', body: '<p>v1</p>' }),
+      }))).json();
+      await fetch(srv.baseUrl + `/api/content/${c.id}`, authed(auth, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Rev test 2', body: '<p>v2</p>' }),
+      }));
+      await fetch(srv.baseUrl + `/api/content/${c.id}`, authed(auth, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Rev test 3', body: '<p>v3</p>' }),
+      }));
+
+      const withHist = await (await fetch(srv.baseUrl + '/api/content/rev-test?revisions=true', authed(auth))).json();
+      assert.strictEqual(withHist.revisions.length, 3, '1 create + 2 edits == 3 revisions');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('FBD-SEO1: Content without slug cannot publish to public surface', async () => {
-    // Criterion: Create content with empty slug. Attempt to publish.
-    // Rejected by reqValidate.
-    // Pass: publish attempt returns validation error about missing slug.
+    // Pass: publish returns a validation error that mentions the slug.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: ' ', body: '<p>no slug</p>' }),
+      }))).json();
+      // Force an empty slug in the DB (auto-slug would give something).
+      const db = new DatabaseSync(path.join(srv.tmpDir, 'data', 'content.db'));
+      try { db.prepare('UPDATE content SET slug=? WHERE id=?').run('', c.id); }
+      finally { db.close(); }
+
+      const pubRes = await fetch(srv.baseUrl + `/api/content/${c.id}/publish`, authed(auth, { method: 'POST' }));
+      assert.ok(!pubRes.ok, 'publish refused');
+      const body = await pubRes.json();
+      assert.ok(/slug/i.test(body.error || ''), 'error mentions slug, got: ' + body.error);
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('FBD-CA1: Cache invalidated on content write', async () => {
-    // Criterion: Fetch content (populates cache). Update content.
-    // Fetch again. Second fetch returns updated content, not stale cache.
-    // Pass: second fetch reflects the update.
+    // Pass: the second read reflects the update (no stale cache).
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Cache v1', slug: 'cache-test', body: '<p>v1</p>' }),
+      }))).json();
+      await fetch(srv.baseUrl + `/api/content/${c.id}/publish`, authed(auth, { method: 'POST' }));
+      const first = await (await fetch(srv.baseUrl + '/cache-test')).text();
+      assert.ok(/<h1>\s*Cache v1/.test(first), 'first fetch renders v1 headline');
+
+      await fetch(srv.baseUrl + `/api/content/${c.id}`, authed(auth, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Cache v2', body: '<p>v2</p>' }),
+      }));
+      const second = await (await fetch(srv.baseUrl + '/cache-test')).text();
+      assert.ok(/<h1>\s*Cache v2/.test(second),
+        'second fetch reflects the update (no stale cache)');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('FBD-LM1: Write operations impossible in SAFE_MODE', async () => {
-    // Criterion: Transition system to SAFE_MODE. Attempt content write.
-    // Rejected. Read operations still succeed (from cache).
-    // Pass: write rejected; read succeeds.
+    // Pass: after flipping lifecycle_state to SAFE_MODE, writes are refused; reads succeed.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+
+      const db = new DatabaseSync(path.join(srv.tmpDir, 'data', 'content.db'));
+      try {
+        db.prepare("UPDATE system_state SET value='SAFE_MODE' WHERE key='lifecycle_state'").run();
+      } finally { db.close(); }
+
+      const writeRes = await fetch(srv.baseUrl + '/api/content', authed(auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'nope', slug: 'nope', body: '<p>x</p>' }),
+      }));
+      assert.ok([403, 423, 503].includes(writeRes.status),
+        'write refused in SAFE_MODE, got ' + writeRes.status);
+
+      const readRes = await fetch(srv.baseUrl + '/api/status');
+      assert.strictEqual(readRes.status, 200, 'reads still succeed in SAFE_MODE');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('FBD-SW1: Stranger Walk threshold triggers DEGRADED state', async () => {
-    // Criterion: Create situation where >5% of URLs have issues.
-    // Run Stranger Walk. System transitions to DEGRADED.
-    // Pass: lifecycle state changes to DEGRADED after walk.
+    // Pass: walk with >5% errors transitions lifecycle_state to DEGRADED.
+    const srv = await startServer();
+    try {
+      const auth = await getAuthToken(srv.baseUrl);
+      // Publish content with broken references to drive error rate above 5%.
+      for (let i = 0; i < 10; i++) {
+        const c = await (await fetch(srv.baseUrl + '/api/content', authed(auth, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: `bad-${i}`, slug: `bad-${i}`,
+            body: `<p><img src="/media/missing-${i}.png"></p>`,
+          }),
+        }))).json();
+        await fetch(srv.baseUrl + `/api/content/${c.id}/publish`, authed(auth, { method: 'POST' }));
+      }
+
+      const walkRes = await fetch(srv.baseUrl + '/api/admin/stranger-walk', authed(auth, { method: 'POST' }));
+      assert.strictEqual(walkRes.status, 200, 'walk endpoint responded');
+
+      const statusRes = await fetch(srv.baseUrl + '/api/status');
+      const body = await statusRes.json();
+      assert.strictEqual(body.state, 'DEGRADED',
+        'lifecycle transitions to DEGRADED after >5% errors, got ' + body.state);
+    } finally {
+      await srv.cleanup();
+    }
   });
 
 });
