@@ -700,11 +700,12 @@ function reqExecute(data, identity, config, req) {
         const revNum = (db.prepare('SELECT MAX(revision_number) as n FROM content_revisions WHERE content_id=?')
           .get(existing.id)?.n || 0) + 1;
         db.prepare(`INSERT INTO content_revisions (content_id, revision_number, title, slug, body, status,
-          meta_title, meta_description, tags, author_id, fields_modified)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+          meta_title, meta_description, tags, author_id, fields_modified, created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
           .run(existing.id, revNum, updated.title, slug, updated.body, existing.status,
             updated.meta_title ?? null, updated.meta_description ?? null, updated.tags ?? null, userId,
-            JSON.stringify(Object.keys(data).filter(k => !k.startsWith('_'))));
+            JSON.stringify(Object.keys(data).filter(k => !k.startsWith('_'))),
+            new Date().toISOString());
 
         // Update FTS
         try {
@@ -729,9 +730,9 @@ function reqExecute(data, identity, config, req) {
             data.tags || '[]', checksum, userId, now, now);
 
         // Revision 1
-        db.prepare(`INSERT INTO content_revisions (content_id, revision_number, title, slug, body, status, author_id, fields_modified)
-          VALUES (?,?,?,?,?,?,?,?)`)
-          .run(id, 1, data.title, slug, data.body || '', 'draft', userId, '["create"]');
+        db.prepare(`INSERT INTO content_revisions (content_id, revision_number, title, slug, body, status, author_id, fields_modified, created_at)
+          VALUES (?,?,?,?,?,?,?,?,?)`)
+          .run(id, 1, data.title, slug, data.body || '', 'draft', userId, '["create"]', new Date().toISOString());
 
         // Index in FTS — FBD-FTS1 (mirror of UPDATE path)
         try {
@@ -778,6 +779,22 @@ function reqExecute(data, identity, config, req) {
       const item = db.prepare('SELECT * FROM content WHERE slug = ? OR id = ?')
         .get(data.slug || data.id, data.id || data.slug);
       if (!item) return { ok: false, status: 404, error: 'Content not found' };
+
+      // Time Travel: if ?at= is present, return the revision closest to that instant.
+      if (data.at) {
+        const horizonRow = db.prepare('SELECT MIN(created_at) as t FROM content_revisions WHERE content_id=?').get(item.id);
+        const rev = db.prepare(
+          'SELECT * FROM content_revisions WHERE content_id=? AND created_at <= ? ORDER BY created_at DESC, revision_number DESC LIMIT 1'
+        ).get(item.id, data.at);
+        if (!rev) {
+          return { ok: false, status: 404,
+            error: 'No revision at that time — the horizon is ' + (horizonRow?.t || 'unknown'),
+            meta: { horizon: horizonRow?.t || null } };
+        }
+        return { ok: true, status: 200,
+          data: { ...item, ...rev, id: item.id, _temporal: true, _at: data.at },
+          meta: { horizon: horizonRow?.t || null } };
+      }
 
       // Integrity check
       const expected = computeChecksum(item);
@@ -857,11 +874,11 @@ function reqExecute(data, identity, config, req) {
       const nextNum = (db.prepare('SELECT MAX(revision_number) as n FROM content_revisions WHERE content_id=?')
         .get(req.contentId)?.n || 0) + 1;
       db.prepare(`INSERT INTO content_revisions (content_id, revision_number, title, slug, body, status,
-        meta_title, meta_description, tags, author_id, fields_modified)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+        meta_title, meta_description, tags, author_id, fields_modified, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run(req.contentId, nextNum, rev.title, rev.slug, rev.body, item.status,
           rev.meta_title, rev.meta_description, rev.tags, userId,
-          JSON.stringify(['restore:' + revNum]));
+          JSON.stringify(['restore:' + revNum]), new Date().toISOString());
 
       try {
         db.prepare(`INSERT INTO content_fts(rowid, title, body, slug, tags)
@@ -1151,9 +1168,15 @@ async function handleRequest(req, res) {
       const result = processRequest({
         contractId: 'FETCH_CONTENT_SINGLE',
         token,
-        payload: { slug: parts[2], withRevisions: url.searchParams.get('revisions') === 'true' },
+        payload: {
+          slug: parts[2],
+          withRevisions: url.searchParams.get('revisions') === 'true',
+          at: url.searchParams.get('at') || undefined,
+        },
       });
-      sendJson(res, result.status, result.ok ? result.data : { error: result.error });
+      const extraHeaders = {};
+      if (result.meta?.horizon) extraHeaders['X-Time-Travel-Horizon'] = result.meta.horizon;
+      sendJson(res, result.status, result.ok ? result.data : { error: result.error }, extraHeaders);
       return;
     }
 
@@ -1719,11 +1742,31 @@ async function uploadFile() {
 async function loadPreviewView(main) {
   const r = await apiFetch('/api/content?surface=public'); const articles = await r.json();
   main.innerHTML = '<h2 style="margin-bottom:16px">Public Preview</h2>' +
+    '<div class="card" style="margin-bottom:16px">' +
+    '<label for="tt-at" style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">Time travel</label>' +
+    '<input id="tt-at" type="datetime-local" onchange="timeTravelPreview(this.value)" style="padding:6px">' +
+    '<span style="margin-left:8px;color:var(--muted);font-size:13px">Pick a past moment to see what the site looked like.</span>' +
+    '</div>' +
+    '<div id="preview-list">' +
     (Array.isArray(articles) && articles.length ? articles.map(a =>
       '<div class="card"><h3><a href="/'+a.slug+'" target="_blank" style="color:var(--fg)">'+esc(a.title)+'</a></h3>' +
       '<p style="color:var(--muted);font-size:13px;margin-top:4px">/' + esc(a.slug) + ' · Published ' +
       new Date(a.published_at).toLocaleDateString() + '</p></div>'
-    ).join('') : '<div class="card"><p style="color:var(--muted)">No published content yet. Write and publish your first article.</p></div>');
+    ).join('') : '<div class="card"><p style="color:var(--muted)">No published content yet. Write and publish your first article.</p></div>') +
+    '</div>';
+}
+
+async function timeTravelPreview(datetimeLocal) {
+  if (!datetimeLocal) return;
+  const iso = new Date(datetimeLocal).toISOString();
+  const r = await apiFetch('/api/content?surface=public&at=' + encodeURIComponent(iso));
+  const items = r.ok ? await r.json() : [];
+  const list = document.getElementById('preview-list'); if (!list) return;
+  list.innerHTML = (Array.isArray(items) && items.length ? items.map(a =>
+    '<div class="card"><h3>'+esc(a.title||'')+'</h3>' +
+    '<p style="color:var(--muted);font-size:13px;margin-top:4px">/' + esc(a.slug||'') +
+    ' · snapshot at ' + esc(iso) + '</p></div>'
+  ).join('') : '<div class="card"><p style="color:var(--muted)">No content existed at that time.</p></div>');
 }
 
 async function loadPublishView(main) {
