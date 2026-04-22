@@ -573,6 +573,58 @@ function computeChecksum(content) {
 }
 
 // ============================================================================
+// DÉJÀ VU — FTS5 prefilter + Jaccard similarity (threshold 0.7)
+// ============================================================================
+
+function dejaVuTokenize(text) {
+  return new Set((text || '')
+    .toLowerCase()
+    .replace(/<[^>]+>/g, ' ')
+    .split(/[^a-z0-9]+/)
+    .filter(t => t.length > 2));
+}
+
+function dejaVuJaccard(a, b) {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersect = 0;
+  for (const t of a) if (b.has(t)) intersect++;
+  return intersect / (a.size + b.size - intersect);
+}
+
+function findSimilarContent(title, body, excludeId) {
+  const tokens = dejaVuTokenize((title || '') + ' ' + (body || '').slice(0, 1000));
+  if (tokens.size < 3) return [];
+
+  let candidates = [];
+  try {
+    const fq = Array.from(tokens).slice(0, 20).join(' OR ');
+    candidates = db.prepare(
+      `SELECT c.id, c.title, c.slug, c.body, c.created_at FROM content c
+       JOIN content_fts f ON c.rowid = f.rowid
+       WHERE content_fts MATCH ? AND c.id != ?
+       ORDER BY rank LIMIT 20`
+    ).all(fq, excludeId || '');
+  } catch (e) {
+    candidates = db.prepare('SELECT id, title, slug, body, created_at FROM content WHERE id != ? LIMIT 50')
+      .all(excludeId || '');
+  }
+
+  const hits = [];
+  for (const c of candidates) {
+    const sim = dejaVuJaccard(tokens, dejaVuTokenize((c.title || '') + ' ' + (c.body || '')));
+    if (sim >= 0.7) {
+      hits.push({
+        id: c.id, title: c.title, slug: c.slug,
+        similarity: Math.round(sim * 100) / 100,
+        created_at: c.created_at,
+      });
+    }
+  }
+  hits.sort((a, b) => b.similarity - a.similarity);
+  return hits;
+}
+
+// ============================================================================
 // processRequest — The Pipeline (L21 Isomorphism 4)
 // Not middleware. Not configurable. A function body.
 // The order cannot be misconfigured because it isn't configured — it's compiled.
@@ -748,7 +800,11 @@ function reqExecute(data, identity, config, req) {
             .run(id, data.title, data.body || '', slug, data.tags || '[]');
         } catch(e) { /* FTS best-effort at Tier 1 */ }
 
-        return { ok: true, status: 201, data: { id, title: data.title, slug, status: 'draft', checksum }, note: data._sanitizeNote };
+        const similar = findSimilarContent(data.title, data.body, id);
+
+        return { ok: true, status: 201,
+          data: { id, title: data.title, slug, status: 'draft', checksum, similar },
+          note: data._sanitizeNote };
       }
     }
 
