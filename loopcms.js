@@ -821,7 +821,7 @@ async function handleRequest(req, res) {
 
     // Generate CSRF token
     const csrfToken = crypto.randomBytes(CONFIG.csrfTokenLength).toString('hex');
-    db.prepare('INSERT OR REPLACE INTO csrf_tokens (token, user_id, created_at) VALUES (?,?,datetime("now"))').run(csrfToken, user.id);
+    db.prepare("INSERT OR REPLACE INTO csrf_tokens (token, user_id, created_at) VALUES (?,?,datetime('now'))").run(csrfToken, user.id);
 
     proofAppend('auth.success', { userId: user.id, username: user.username }, user.id);
     sendJson(res, 200, { token: accessToken, refreshToken, csrfToken, user: { id: user.id, username: user.username, role: user.role } });
@@ -830,7 +830,7 @@ async function handleRequest(req, res) {
 
   if (pathname === '/api/auth/refresh' && method === 'POST') {
     const body = await parseBody(req);
-    const stored = db.prepare('SELECT * FROM refresh_tokens WHERE token = ? AND expires_at > datetime("now")').get(body.refreshToken);
+    const stored = db.prepare("SELECT * FROM refresh_tokens WHERE token = ? AND expires_at > datetime('now')").get(body.refreshToken);
     if (!stored) { sendJson(res, 401, { error: 'Invalid refresh token. Please log in again.' }); return; }
     // Rotate — invalidate old, issue new
     db.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(body.refreshToken);
