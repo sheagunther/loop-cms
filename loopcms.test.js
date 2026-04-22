@@ -15,12 +15,35 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const jwt = require('jsonwebtoken');
+const crypto = require('node:crypto');
+const { DatabaseSync } = require('node:sqlite');
 
 const LOOPCMS_PATH = path.join(__dirname, 'loopcms.js');
+
+// Seed a CSRF token directly into the server's sqlite DB for a given user id.
+// Used to exercise authenticated writes for minted (non-admin) JWTs.
+function seedCsrf(srv, userId) {
+  const db = new DatabaseSync(path.join(srv.tmpDir, 'data', 'content.db'));
+  try {
+    const csrfToken = crypto.randomBytes(32).toString('hex');
+    db.prepare("INSERT OR REPLACE INTO csrf_tokens (token, user_id, created_at) VALUES (?,?,datetime('now'))").run(csrfToken, userId);
+    return csrfToken;
+  } finally {
+    db.close();
+  }
+}
 
 // Mint a JWT the server will accept (server uses the JWT_SECRET env var we set).
 function mintToken(srv, { userId, username, role }) {
   return jwt.sign({ userId, username, role }, srv.jwtSecret, { expiresIn: '5m' });
+}
+
+// fetch wrapper that sets Authorization + X-CSRF-Token for authenticated writes.
+function authed(auth, init = {}) {
+  const headers = { ...(init.headers || {}) };
+  if (auth?.token) headers['Authorization'] = 'Bearer ' + auth.token;
+  if (auth?.csrfToken) headers['X-CSRF-Token'] = auth.csrfToken;
+  return { ...init, headers };
 }
 
 function pickFreePort() {
@@ -219,27 +242,28 @@ describe('Security', () => {
     // Pass: 403 when editor (no content:publish) tries to publish; content stays DRAFT.
     const srv = await startServer();
     try {
-      const { token: adminToken } = await getAuthToken(srv.baseUrl);
+      const admin = await getAuthToken(srv.baseUrl);
 
-      const createRes = await fetch(srv.baseUrl + '/api/content', {
+      const createRes = await fetch(srv.baseUrl + '/api/content', authed(admin, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + adminToken },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: 'Draft article', slug: 'draft-article', body: '<p>hi</p>' }),
-      });
+      }));
       const created = await createRes.json();
       assert.strictEqual(createRes.status, 201);
 
-      const editorToken = mintToken(srv, { userId: 'ed001', username: 'ed', role: 'editor' });
-      const pubRes = await fetch(srv.baseUrl + `/api/content/${created.id}/publish`, {
+      // Editor: mint JWT + seed matching CSRF so the publish fails on RBAC, not CSRF.
+      const editor = {
+        token: mintToken(srv, { userId: 'ed001', username: 'ed', role: 'editor' }),
+        csrfToken: seedCsrf(srv, 'ed001'),
+      };
+      const pubRes = await fetch(srv.baseUrl + `/api/content/${created.id}/publish`, authed(editor, {
         method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + editorToken },
-      });
+      }));
       assert.strictEqual(pubRes.status, 403, 'editor publish must be forbidden');
 
       // Verify content is still a draft.
-      const getRes = await fetch(srv.baseUrl + '/api/content/draft-article', {
-        headers: { 'Authorization': 'Bearer ' + adminToken },
-      });
+      const getRes = await fetch(srv.baseUrl + '/api/content/draft-article', authed(admin));
       const item = await getRes.json();
       assert.strictEqual(item.status, 'draft', 'content remained draft after refused publish');
     } finally {
@@ -251,26 +275,26 @@ describe('Security', () => {
     // Pass: stored title has no script tag; rendered public page is encoded.
     const srv = await startServer();
     try {
-      const { token } = await getAuthToken(srv.baseUrl);
+      const auth = await getAuthToken(srv.baseUrl);
 
       const payload = {
         title: 'Hello <script>alert(1)</script>',
         slug: 'xss-test',
         body: '<p>body</p>',
       };
-      const createRes = await fetch(srv.baseUrl + '/api/content', {
+      const createRes = await fetch(srv.baseUrl + '/api/content', authed(auth, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      });
+      }));
       const created = await createRes.json();
       assert.strictEqual(createRes.status, 201);
       assert.ok(!/<script>/i.test(created.title), 'stored title has no <script> tag');
       assert.ok(created.note, 'sanitize note is returned to the user');
 
-      await fetch(srv.baseUrl + `/api/content/${created.id}/publish`, {
-        method: 'POST', headers: { 'Authorization': 'Bearer ' + token },
-      });
+      await fetch(srv.baseUrl + `/api/content/${created.id}/publish`, authed(auth, {
+        method: 'POST',
+      }));
 
       const pageRes = await fetch(srv.baseUrl + '/xss-test');
       const html = await pageRes.text();
@@ -285,12 +309,12 @@ describe('Security', () => {
     // Pass: draft slug missing from sitemap; public page returns 404.
     const srv = await startServer();
     try {
-      const { token } = await getAuthToken(srv.baseUrl);
-      const createRes = await fetch(srv.baseUrl + '/api/content', {
+      const auth = await getAuthToken(srv.baseUrl);
+      const createRes = await fetch(srv.baseUrl + '/api/content', authed(auth, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: 'Secret draft', slug: 'secret-draft', body: '<p>nope</p>' }),
-      });
+      }));
       assert.strictEqual(createRes.status, 201);
 
       const sitemap = await (await fetch(srv.baseUrl + '/sitemap.xml')).text();
@@ -300,9 +324,7 @@ describe('Security', () => {
       assert.strictEqual(pageRes.status, 404, 'public page for draft must be 404');
 
       // Also verify the authenticated public-surface listing excludes drafts.
-      const listRes = await fetch(srv.baseUrl + '/api/content?surface=public', {
-        headers: { 'Authorization': 'Bearer ' + token },
-      });
+      const listRes = await fetch(srv.baseUrl + '/api/content?surface=public', authed(auth));
       const items = await listRes.json();
       assert.ok(Array.isArray(items));
       assert.ok(!items.some(i => i.slug === 'secret-draft'), 'public-surface listing excludes drafts');
@@ -315,7 +337,7 @@ describe('Security', () => {
     // Pass: EXIF marker absent from stored file.
     const srv = await startServer();
     try {
-      const { token } = await getAuthToken(srv.baseUrl);
+      const auth = await getAuthToken(srv.baseUrl);
 
       // Minimal JPEG-like payload with an APP1 EXIF segment containing a GPS marker.
       const marker = Buffer.from('GPSLatitudeSENTINEL', 'ascii');
@@ -327,14 +349,14 @@ describe('Security', () => {
         Buffer.from([0xFF, 0xD9]),                 // EOI
       ]);
 
-      const uploadRes = await fetch(srv.baseUrl + '/api/media', {
+      const uploadRes = await fetch(srv.baseUrl + '/api/media', authed(auth, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           filename: 'geo.jpg', mime_type: 'image/jpeg',
           data: jpeg.toString('base64'),
         }),
-      });
+      }));
       assert.strictEqual(uploadRes.status, 201);
       const meta = await uploadRes.json();
 
@@ -350,20 +372,20 @@ describe('Security', () => {
     // Pass: stored SVG contains no <script> or on* handler.
     const srv = await startServer();
     try {
-      const { token } = await getAuthToken(srv.baseUrl);
+      const auth = await getAuthToken(srv.baseUrl);
 
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)">
 <script>alert('xss')</script>
 <circle cx="50" cy="50" r="40"/></svg>`;
 
-      const uploadRes = await fetch(srv.baseUrl + '/api/media', {
+      const uploadRes = await fetch(srv.baseUrl + '/api/media', authed(auth, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           filename: 'danger.svg', mime_type: 'image/svg+xml',
           data: Buffer.from(svg).toString('base64'),
         }),
-      });
+      }));
       assert.strictEqual(uploadRes.status, 201);
       const meta = await uploadRes.json();
 
@@ -379,22 +401,20 @@ describe('Security', () => {
     // Pass: iframe stripped from stored body.
     const srv = await startServer();
     try {
-      const { token } = await getAuthToken(srv.baseUrl);
+      const auth = await getAuthToken(srv.baseUrl);
 
-      const createRes = await fetch(srv.baseUrl + '/api/content', {
+      const createRes = await fetch(srv.baseUrl + '/api/content', authed(auth, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: 'Embed test', slug: 'embed-test',
           body: '<p>hi</p><iframe src="https://evil.example.com/x"></iframe>',
         }),
-      });
+      }));
       const created = await createRes.json();
       assert.strictEqual(createRes.status, 201);
 
-      const getRes = await fetch(srv.baseUrl + '/api/content/embed-test', {
-        headers: { 'Authorization': 'Bearer ' + token },
-      });
+      const getRes = await fetch(srv.baseUrl + '/api/content/embed-test', authed(auth));
       const item = await getRes.json();
       assert.ok(!/<iframe/i.test(item.body), 'iframe must be stripped from stored body');
       assert.ok(!item.body.includes('evil.example.com'), 'embed src must not survive');
@@ -423,21 +443,19 @@ describe('Security', () => {
     // Pass: XSS in imported body is stripped on store.
     const srv = await startServer();
     try {
-      const { token } = await getAuthToken(srv.baseUrl);
+      const auth = await getAuthToken(srv.baseUrl);
       const imported = {
         title: 'Imported post', slug: 'imported',
         body: '<p>legit</p><script>window.stolen = document.cookie</script><img src=x onerror="alert(1)">',
       };
-      const r = await fetch(srv.baseUrl + '/api/content', {
+      const r = await fetch(srv.baseUrl + '/api/content', authed(auth, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(imported),
-      });
+      }));
       assert.strictEqual(r.status, 201);
 
-      const getRes = await fetch(srv.baseUrl + '/api/content/imported', {
-        headers: { 'Authorization': 'Bearer ' + token },
-      });
+      const getRes = await fetch(srv.baseUrl + '/api/content/imported', authed(auth));
       const item = await getRes.json();
       assert.ok(!/<script/i.test(item.body), 'imported body has no <script>');
       assert.ok(!/\sonerror\s*=/i.test(item.body), 'imported body has no onerror handler');
@@ -694,27 +712,26 @@ describe('Integration', () => {
     const t0 = Date.now();
     const srv = await startServer();
     try {
-      const { token } = await getAuthToken(srv.baseUrl);
-      assert.ok(token, 'login returned a token');
+      const auth = await getAuthToken(srv.baseUrl);
+      assert.ok(auth.token, 'login returned a token');
 
-      const createRes = await fetch(srv.baseUrl + '/api/content', {
+      const createRes = await fetch(srv.baseUrl + '/api/content', authed(auth, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: 'First post',
           slug: 'first-post',
           body: '<p>Hello.</p>',
           content_type: 'article',
         }),
-      });
+      }));
       const created = await createRes.json();
       assert.strictEqual(createRes.status, 201, 'create returns 201, got ' + createRes.status + ' ' + JSON.stringify(created));
       assert.ok(created.id, 'create returns id');
 
-      const pubRes = await fetch(srv.baseUrl + `/api/content/${created.id}/publish`, {
+      const pubRes = await fetch(srv.baseUrl + `/api/content/${created.id}/publish`, authed(auth, {
         method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + token },
-      });
+      }));
       const published = await pubRes.json();
       assert.strictEqual(pubRes.status, 200, 'publish returns 200, got ' + pubRes.status + ' ' + JSON.stringify(published));
       assert.strictEqual(published.status, 'published');

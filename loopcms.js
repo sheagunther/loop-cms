@@ -338,6 +338,47 @@ function sanitizeForOutput(text) {
     .replace(/'/g, '&#x27;');
 }
 
+// FBD-MD1: strip APPn markers (EXIF/XMP/ICC) from JPEG buffers.
+// Hand-rolled — walks JPEG marker segments and drops any FF E0..FF EF block.
+function stripJpegMetadata(buffer) {
+  if (buffer.length < 4 || buffer[0] !== 0xFF || buffer[1] !== 0xD8) return buffer;
+  const out = [Buffer.from([0xFF, 0xD8])];
+  let pos = 2;
+  while (pos + 1 < buffer.length) {
+    if (buffer[pos] !== 0xFF) { out.push(buffer.subarray(pos)); break; }
+    const marker = buffer[pos + 1];
+    if (marker === 0xD9) { out.push(buffer.subarray(pos)); break; }       // EOI
+    if (marker === 0xDA) { out.push(buffer.subarray(pos)); break; }       // SOS → image data
+    if (marker >= 0xD0 && marker <= 0xD7) { out.push(Buffer.from([0xFF, marker])); pos += 2; continue; }
+    if (pos + 4 > buffer.length) break;
+    const segLen = (buffer[pos + 2] << 8) | buffer[pos + 3];
+    const segEnd = pos + 2 + segLen;
+    if (segLen < 2 || segEnd > buffer.length) break;
+    if (marker >= 0xE0 && marker <= 0xEF) { pos = segEnd; continue; }     // strip APPn
+    out.push(buffer.subarray(pos, segEnd));
+    pos = segEnd;
+  }
+  return Buffer.concat(out);
+}
+
+// FBD-MD1: strip executable content from SVG bytes before storage.
+function sanitizeSvg(svgText) {
+  return svgText
+    // Whole <script>...</script> blocks
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    // Self-closing or orphan <script ... />
+    .replace(/<script\b[^>]*\/?>/gi, '')
+    // <foreignObject> can smuggle HTML/script
+    .replace(/<foreignObject\b[^<]*(?:(?!<\/foreignObject>)<[^<]*)*<\/foreignObject>/gi, '')
+    // on* event handlers (quoted and unquoted)
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
+    .replace(/\son\w+\s*=\s*[^\s>]+/gi, '')
+    // href / xlink:href with javascript: or data: schemes
+    .replace(/\s(?:xlink:)?href\s*=\s*"(?:\s*(?:javascript|data):)[^"]*"/gi, '')
+    .replace(/\s(?:xlink:)?href\s*=\s*'(?:\s*(?:javascript|data):)[^']*'/gi, '');
+}
+
 // ============================================================================
 // CONSTELLATION FINGERPRINT — Human-memorable state names
 // ============================================================================
@@ -487,16 +528,21 @@ function reqValidate(req, config) {
 }
 
 function reqSanitize(data, config) {
-  if (config.sanitize === true && data.body) {
-    const originalBody = data.body;
+  if (config.sanitize !== true) return data;
+  let changed = false;
+  if (data.body) {
+    const original = data.body;
     data.body = sanitizeHtml(data.body);
-    if (originalBody !== data.body) {
-      data._sanitized = true;
-      data._sanitizeNote = 'We cleaned up some HTML in your content — unsafe tags were removed.';
-    }
+    if (original !== data.body) changed = true;
   }
-  if (config.sanitize === true && data.title) {
+  if (data.title) {
+    const original = data.title;
     data.title = sanitizeHtml(data.title);
+    if (original !== data.title) changed = true;
+  }
+  if (changed) {
+    data._sanitized = true;
+    data._sanitizeNote = 'We cleaned up some HTML in your content — unsafe tags were removed.';
   }
   return data;
 }
@@ -760,6 +806,17 @@ function getToken(req) {
   return cookies.token;
 }
 
+// FBD-CF1: validate the submitted CSRF token is bound to the caller's user.
+function validateCsrf(req, token) {
+  if (!token) return false;
+  const submitted = req.headers['x-csrf-token'];
+  if (!submitted) return false;
+  const decoded = jwt.decode(token);
+  if (!decoded?.userId) return false;
+  const row = db.prepare('SELECT user_id FROM csrf_tokens WHERE token = ?').get(submitted);
+  return !!row && row.user_id === decoded.userId;
+}
+
 function sendJson(res, status, data) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
@@ -839,6 +896,15 @@ async function handleRequest(req, res) {
     const newRefresh = crypto.randomBytes(32).toString('hex');
     db.prepare('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES (?,?,?)').run(newRefresh, user.id, new Date(Date.now() + CONFIG.refreshExpiry).toISOString());
     sendJson(res, 200, { token: accessToken, refreshToken: newRefresh });
+    return;
+  }
+
+  // ---- CSRF GATE (FBD-CF1) — authenticated state-changing requests ----
+  const isCsrfProtectedWrite =
+    (method === 'POST' || method === 'PUT' || method === 'DELETE') &&
+    (pathname.startsWith('/api/content') || pathname === '/api/media');
+  if (isCsrfProtectedWrite && !validateCsrf(req, token)) {
+    sendJson(res, 403, { error: 'CSRF token required. Log out and back in to get a fresh one.' });
     return;
   }
 
@@ -927,9 +993,16 @@ async function handleRequest(req, res) {
       const filename = `${id}${ext}`;
       const filepath = path.join(CONFIG.mediaDir, filename);
 
-      // FBD-MD1: strip EXIF (simplified — in production use sharp/exiftool)
-      const buffer = Buffer.from(body.data, 'base64');
+      let buffer = Buffer.from(body.data, 'base64');
       if (buffer.length > CONFIG.maxUploadSize) { sendJson(res, 413, { error: 'File too large. Maximum 50MB.' }); return; }
+
+      // FBD-MD1: sanitize media before storage
+      const mime = (body.mime_type || '').toLowerCase();
+      if (mime === 'image/jpeg' || ext === '.jpg' || ext === '.jpeg') {
+        buffer = stripJpegMetadata(buffer);
+      } else if (mime === 'image/svg+xml' || ext === '.svg') {
+        buffer = Buffer.from(sanitizeSvg(buffer.toString('utf8')), 'utf8');
+      }
 
       fs.writeFileSync(filepath, buffer);
       db.prepare('INSERT INTO media (id, filename, original_name, mime_type, size, path, uploaded_by) VALUES (?,?,?,?,?,?,?)')
@@ -1186,6 +1259,7 @@ function doLogout() { state = {token:null,refreshToken:null,csrfToken:null,user:
 async function apiFetch(url, opts={}) {
   const headers = {'Content-Type':'application/json', ...opts.headers};
   if (state.token) headers['Authorization'] = 'Bearer '+state.token;
+  if (state.csrfToken) headers['X-CSRF-Token'] = state.csrfToken;
   const r = await fetch(url, {...opts, headers});
   if (r.status === 401 && state.refreshToken) {
     const ref = await fetch('/api/auth/refresh', {method:'POST',headers:{'Content-Type':'application/json'},
