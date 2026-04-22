@@ -573,6 +573,52 @@ function computeChecksum(content) {
 }
 
 // ============================================================================
+// STRANGER WALK — self-navigation health sweep (D-09, D-10, FBD-SW1)
+// Walks every published URL, verifies referenced media exists on disk.
+// >5% URLs with issues → lifecycle transitions to DEGRADED.
+// ============================================================================
+
+function strangerWalk() {
+  const articles = db.prepare("SELECT slug, body FROM content WHERE status='published'").all();
+  const issues = [];
+  const urlsChecked = articles.length;
+  let urlsWithIssues = 0;
+
+  for (const a of articles) {
+    let articleHasIssue = false;
+    const imgMatches = [...(a.body || '').matchAll(/<img[^>]+src=["']([^"']+)["']/gi)];
+    for (const m of imgMatches) {
+      const src = m[1];
+      if (src.startsWith('/media/')) {
+        const filename = src.slice('/media/'.length);
+        if (!fs.existsSync(path.join(CONFIG.mediaDir, filename))) {
+          issues.push({ url: '/' + a.slug, image: src, issue: 'missing media file' });
+          articleHasIssue = true;
+        }
+      }
+    }
+    if (articleHasIssue) urlsWithIssues++;
+  }
+
+  const errorRate = urlsChecked > 0 ? urlsWithIssues / urlsChecked : 0;
+  const degraded = errorRate > 0.05;
+  if (degraded) {
+    db.prepare("UPDATE system_state SET value='DEGRADED' WHERE key='lifecycle_state'").run();
+    proofAppend('system.state_transition', { from: 'NOMINAL', to: 'DEGRADED', reason: 'stranger_walk threshold breach' }, 'system');
+  }
+
+  proofAppend('stranger_walk.complete', {
+    summary: `Stranger Walk complete. ${urlsChecked} URLs checked. ${issues.length} issues found.`,
+    urls_checked: urlsChecked,
+    issues_found: issues.length,
+    error_rate: errorRate,
+    issues: issues.slice(0, 50),
+  }, 'system');
+
+  return { urls_checked: urlsChecked, issues_found: issues.length, issues, error_rate: errorRate, degraded };
+}
+
+// ============================================================================
 // DÉJÀ VU — FTS5 prefilter + Jaccard similarity (threshold 0.7)
 // ============================================================================
 
@@ -1442,6 +1488,14 @@ async function handleRequest(req, res) {
       if (fromRow.spec_hash !== toRow.spec_hash) changes.push({ field: 'spec_hash', from: fromRow.spec_hash, to: toRow.spec_hash });
     }
     sendJson(res, 200, { from: fromRow, to: toRow, diff: identical ? 'same' : 'different', changes });
+    return;
+  }
+
+  // ---- ADMIN: stranger walk ----
+  if (pathname === '/api/admin/stranger-walk' && method === 'POST') {
+    if (!token) { sendJson(res, 401, { error: 'Authentication required.' }); return; }
+    const result = strangerWalk();
+    sendJson(res, 200, result);
     return;
   }
 
