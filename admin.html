@@ -200,6 +200,33 @@
   }
   .btn-delete:hover { color:#dc2626; }
   .btn-preview:hover { color:var(--accent); }
+  .content-url {
+    display:flex; align-items:center; gap:10px;
+    margin-top:4px; font-size:13px;
+    font-family:'SF Mono',Monaco,Menlo,monospace;
+    min-width:0;
+  }
+  .content-url a {
+    color:var(--muted); text-decoration:none;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    min-width:0; flex:0 1 auto;
+    transition:color 0.15s;
+  }
+  .content-url a:hover {
+    color:var(--accent);
+    text-decoration:underline; text-underline-offset:2px;
+  }
+  .btn-copy {
+    flex-shrink:0;
+    background:none; border:none; cursor:pointer;
+    font-family:inherit; font-size:11px; font-weight:600;
+    color:var(--muted);
+    padding:2px 6px;
+    text-transform:uppercase; letter-spacing:0.06em;
+    transition:color 0.15s;
+  }
+  .btn-copy:hover { color:var(--fg); }
+  .btn-copy.copied { color:var(--success-fg); }
   .upload-progress {
     margin-top:10px; font-size:13px; color:var(--muted);
     line-height:1.5; min-height:1em; font-variant-numeric:tabular-nums;
@@ -371,21 +398,28 @@ async function loadGhostLinksView(main) {
 async function loadWriteView(main) {
   const wr = await apiFetch('/api/weather'); const weather = await wr.json();
   const r = await apiFetch('/api/content'); const articles = await r.json();
+  const origin = window.location.origin;
 
   main.innerHTML = '<div class="weather">' + (weather.weather||'System loading...') + '</div>' +
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">' +
     '<h2>Content</h2><button class="btn btn-primary" onclick="newArticle()">+ New Article</button></div>' +
     '<div class="card"><ul class="content-list" id="content-list">' +
-    (Array.isArray(articles) ? articles.map(a =>
-      '<li class="content-item"><div><span class="content-title" onclick="editArticle(\''+a.id+'\')">' +
-      esc(a.title) + '</span><div class="content-meta">' + (a.slug||'') + ' · ' +
-      new Date(a.updated_at).toLocaleDateString() + '</div></div>' +
-      '<div class="content-actions">' +
-      '<span class="status-badge status-'+a.status+'">' + a.status + '</span>' +
-      (a.slug ? '<a class="btn-preview" href="/'+esc(a.slug)+'" target="_blank" rel="noopener">Preview</a>' : '') +
-      '<button class="btn-delete" data-title="'+esc(a.title)+'" onclick="deleteArticle(\''+a.id+'\', this.dataset.title)">Delete</button>' +
-      '</div></li>'
-    ).join('') : '<li>No content yet</li>') + '</ul></div>';
+    (Array.isArray(articles) ? articles.map(a => {
+      const fullUrl = a.slug ? origin + '/' + a.slug : '';
+      return '<li class="content-item"><div><span class="content-title" onclick="editArticle(\''+a.id+'\')">' +
+        esc(a.title) + '</span><div class="content-meta">' + (a.slug||'') + ' · ' +
+        new Date(a.updated_at).toLocaleDateString() + '</div>' +
+        (fullUrl ? '<div class="content-url">' +
+          '<a href="'+esc(fullUrl)+'" target="_blank" rel="noopener">'+esc(fullUrl)+'</a>' +
+          '<button class="btn-copy" data-url="'+esc(fullUrl)+'" onclick="copyUrl(this)" aria-label="Copy URL">Copy</button>' +
+          '</div>' : '') +
+        '</div>' +
+        '<div class="content-actions">' +
+        '<span class="status-badge status-'+a.status+'">' + a.status + '</span>' +
+        (a.slug ? '<a class="btn-preview" href="/'+esc(a.slug)+'" target="_blank" rel="noopener">Preview</a>' : '') +
+        '<button class="btn-delete" data-title="'+esc(a.title)+'" onclick="deleteArticle(\''+a.id+'\', this.dataset.title)">Delete</button>' +
+        '</div></li>';
+    }).join('') : '<li>No content yet</li>') + '</ul></div>';
 }
 
 function newArticle() { state.editingId=null; showEditor({title:'',body:'',slug:'',meta_title:'',meta_description:'',tags:'[]'}); }
@@ -460,6 +494,30 @@ async function deleteArticle(id, title) {
     let msg = 'Delete failed';
     try { msg = (await r.json()).error || msg; } catch(e) {}
     toast(msg,'error');
+  }
+}
+
+async function copyUrl(btn) {
+  const url = btn.dataset.url;
+  if (!url) return;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(url);
+    } else {
+      // Fallback for browsers without async clipboard (e.g. non-HTTPS origins)
+      const ta = document.createElement('textarea');
+      ta.value = url; ta.setAttribute('readonly','');
+      ta.style.position='absolute'; ta.style.left='-9999px';
+      document.body.appendChild(ta);
+      ta.select(); document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    const original = btn.textContent;
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = original; btn.classList.remove('copied'); }, 1200);
+  } catch (e) {
+    toast('Copy failed — check your browser settings','error');
   }
 }
 
@@ -614,6 +672,7 @@ window.editArticle = editArticle;
 window.saveArticle = saveArticle;
 window.publishArticle = publishArticle;
 window.deleteArticle = deleteArticle;
+window.copyUrl = copyUrl;
 window.uploadFiles = uploadFiles;
 window.timeTravelPreview = timeTravelPreview;
 window.applyRolePermissions = applyRolePermissions;
