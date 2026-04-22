@@ -25,6 +25,9 @@ esbuild.build({
   outfile,
   external,
   legalComments: 'inline',
+  // admin.html is required as a module — esbuild inlines its text content
+  // so the bundled output needs no runtime fs lookup for it.
+  loader: { '.html': 'text' },
 }).then(() => {
   fs.chmodSync(outfile, 0o755);
   const size = fs.statSync(outfile).size;
