@@ -2,14 +2,29 @@
 
 A content management system that fits in one file. Run one command, open your browser, see five buttons: Write, Upload, Preview, Schedule, Publish. Everything you write goes to a SQLite database on disk with a hash-chained audit log underneath. Drop the file, kill the process, yank the power — the next boot picks up exactly where you left off. The system that lost everything once made a promise: never again.
 
-## Run it
+## Quick Start
+
+Download [`loopcms.js`](https://github.com/sheagunther/loop-cms/releases/latest/download/loopcms.js) from the latest release. Run it:
 
 ```
-npm install
 node loopcms.js
 ```
 
+That's it. No `npm install`, no `node_modules`, no `package.json`. One file, 262 KB, zero dependencies.
+
 Open http://localhost:3000. First-run seeds an admin account (`admin` / `admin`). Change the password immediately.
+
+## Development
+
+To work on the source, run tests, or rebuild the bundle:
+
+```
+git clone https://github.com/sheagunther/loop-cms.git
+cd loop-cms
+npm install
+npm test         # runs the 54-test acceptance suite
+npm run build    # produces dist/loopcms.js
+```
 
 ## What it does
 
