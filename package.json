@@ -1,0 +1,20 @@
+{
+  "name": "loop-cms",
+  "version": "1.0.0",
+  "description": "",
+  "main": "loopcms.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://local_proxy@127.0.0.1:41157/git/sheagunther/loop-cms"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "jsonwebtoken": "^9.0.3"
+  }
+}
