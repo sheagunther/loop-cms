@@ -9,19 +9,105 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
+const { spawn } = require('node:child_process');
+const net = require('node:net');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
-// Helper: start server, return base URL + cleanup function
-// TODO: implement — start loopcms.js on a random port, return { baseUrl, cleanup }
-async function startServer() {
-  // Start the CMS server for testing
-  // Return { baseUrl: 'http://localhost:PORT', db, cleanup: () => {...} }
-  throw new Error('Not implemented — wire up server startup');
+const LOOPCMS_PATH = path.join(__dirname, 'loopcms.js');
+
+function pickFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.on('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
 }
 
-// Helper: create admin user, login, return token
+async function waitForStatus(baseUrl, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastErr;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(baseUrl + '/api/status');
+      if (r.ok) return await r.json();
+    } catch (e) { lastErr = e; }
+    await new Promise(r => setTimeout(r, 50));
+  }
+  throw new Error('Server did not become ready: ' + (lastErr?.message || 'timeout'));
+}
+
+// Helper: start server, return base URL + cleanup function
+async function startServer() {
+  const port = await pickFreePort();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loopcms-test-'));
+  const dataDir = path.join(tmpDir, 'data');
+  const mediaDir = path.join(tmpDir, 'media');
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.mkdirSync(mediaDir, { recursive: true });
+
+  const child = spawn(process.execPath, [LOOPCMS_PATH], {
+    env: {
+      ...process.env,
+      PORT: String(port),
+      HOST: '127.0.0.1',
+      DATA_DIR: dataDir,
+      MEDIA_DIR: mediaDir,
+      JWT_SECRET: 'test-secret-' + port,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const stdoutChunks = [];
+  const stderrChunks = [];
+  child.stdout.on('data', c => stdoutChunks.push(c));
+  child.stderr.on('data', c => stderrChunks.push(c));
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+  let exited = false;
+  child.on('exit', () => { exited = true; });
+
+  try {
+    await waitForStatus(baseUrl, 10000);
+  } catch (e) {
+    child.kill('SIGKILL');
+    const out = Buffer.concat(stdoutChunks).toString() + Buffer.concat(stderrChunks).toString();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    throw new Error('startServer failed: ' + e.message + '\n' + out);
+  }
+
+  const cleanup = async () => {
+    if (!exited) {
+      child.kill('SIGTERM');
+      await new Promise(r => { child.once('exit', r); setTimeout(() => { child.kill('SIGKILL'); r(); }, 2000); });
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  };
+
+  return {
+    baseUrl, port, tmpDir, child,
+    stdout: () => Buffer.concat(stdoutChunks).toString(),
+    stderr: () => Buffer.concat(stderrChunks).toString(),
+    cleanup,
+  };
+}
+
+// Helper: login as seeded admin (first-run creates admin/admin), return tokens
 async function getAuthToken(baseUrl, role = 'admin') {
-  // POST /api/auth/login → { token, csrfToken }
-  throw new Error('Not implemented — wire up auth');
+  const creds = { admin: { username: 'admin', password: 'admin' } }[role];
+  if (!creds) throw new Error('Unknown role for getAuthToken: ' + role);
+  const r = await fetch(baseUrl + '/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(creds),
+  });
+  const body = await r.json();
+  if (!r.ok) throw new Error(`login failed ${r.status}: ${JSON.stringify(body)}`);
+  return { token: body.token, csrfToken: body.csrfToken, user: body.user };
 }
 
 // ============================================================================
@@ -364,23 +450,72 @@ describe('Differentiation', () => {
 describe('Integration', () => {
 
   it('INT-01: Single-file Tier 1 — download, run, publish', async () => {
-    // Criterion: Copy loopcms.js to empty directory. Run it.
-    // Server starts. First-run experience creates admin account.
-    // Publish article within 90 seconds of first command.
-    // Same spec would deploy to Docker (structural, not tested here).
     // Pass: server starts; article published; under 90 seconds.
+    const t0 = Date.now();
+    const srv = await startServer();
+    try {
+      const { token } = await getAuthToken(srv.baseUrl);
+      assert.ok(token, 'login returned a token');
+
+      const createRes = await fetch(srv.baseUrl + '/api/content', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify({
+          title: 'First post',
+          slug: 'first-post',
+          body: '<p>Hello.</p>',
+          content_type: 'article',
+        }),
+      });
+      const created = await createRes.json();
+      assert.strictEqual(createRes.status, 201, 'create returns 201, got ' + createRes.status + ' ' + JSON.stringify(created));
+      assert.ok(created.id, 'create returns id');
+
+      const pubRes = await fetch(srv.baseUrl + `/api/content/${created.id}/publish`, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+      const published = await pubRes.json();
+      assert.strictEqual(pubRes.status, 200, 'publish returns 200, got ' + pubRes.status + ' ' + JSON.stringify(published));
+      assert.strictEqual(published.status, 'published');
+
+      const pageRes = await fetch(srv.baseUrl + '/first-post');
+      assert.strictEqual(pageRes.status, 200, 'published article is reachable on public surface');
+
+      const elapsed = Date.now() - t0;
+      assert.ok(elapsed < 90_000, `took ${elapsed}ms, must be <90s`);
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('INT-02: Watchdog heartbeat visible in status', async () => {
-    // Criterion: GET /api/admin/status includes heartbeat data:
-    // system state (NOMINAL), uptime, response latency, error rate.
     // Pass: status endpoint returns health metrics.
+    const srv = await startServer();
+    try {
+      const r = await fetch(srv.baseUrl + '/api/status');
+      assert.strictEqual(r.status, 200);
+      const body = await r.json();
+      assert.ok(body.status, 'status string present');
+      assert.ok('state' in body, 'state field present');
+      assert.ok('fingerprint' in body, 'fingerprint present');
+      assert.ok('content' in body, 'content count present');
+      assert.ok('proof' in body, 'proof count present');
+    } finally {
+      await srv.cleanup();
+    }
   });
 
   it('INT-03: Lifecycle state reports NOMINAL', async () => {
-    // Criterion: Fresh server start → lifecycle state is NOMINAL.
-    // All systems operational. No degraded subsystems.
-    // Pass: status.lifecycleState === 'NOMINAL'.
+    // Pass: status.state === 'NOMINAL'.
+    const srv = await startServer();
+    try {
+      const r = await fetch(srv.baseUrl + '/api/status');
+      const body = await r.json();
+      assert.strictEqual(body.state, 'NOMINAL', 'fresh server should be NOMINAL, got ' + body.state);
+    } finally {
+      await srv.cleanup();
+    }
   });
 
 });
