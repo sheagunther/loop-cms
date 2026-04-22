@@ -143,6 +143,60 @@
     color: var(--accent);
   }
 
+  /* Get Started */
+  .get-started .steps { margin-top: 40px; }
+  .step {
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    gap: 24px;
+    padding: 32px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .step:last-child { border-bottom: none; }
+  .step-num {
+    font-family: var(--serif);
+    font-size: 48px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--accent);
+    letter-spacing: -0.02em;
+  }
+  .step h3 {
+    font-family: var(--serif);
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0 0 12px;
+    letter-spacing: -0.005em;
+  }
+  .step p {
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.65;
+    color: var(--ink-muted);
+    margin: 0 0 14px;
+  }
+  .step p:last-child { margin-bottom: 0; }
+  .step .inline-link {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .step-code {
+    display: block;
+    background: var(--paper-warm);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 16px 20px;
+    margin: 14px 0;
+    font-family: 'SF Mono', Monaco, Menlo, 'Cascadia Code', monospace;
+    font-size: 14px;
+    line-height: 1.8;
+    color: var(--ink);
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .step-code .prompt { color: var(--accent); margin-right: 6px; user-select: none; }
+
   /* Features */
   .features { background: var(--paper-warm); }
   .features-grid {
@@ -256,6 +310,9 @@
     .closing { padding: 80px 0 72px; }
     .terminal { font-size: 12.5px; padding: 20px 18px; }
     .cta-secondary { display: block; margin: 16px 0 0; }
+    .step { grid-template-columns: 1fr; gap: 8px; padding: 24px 0; }
+    .step-num { font-size: 36px; }
+    .step-code { font-size: 13px; padding: 14px 16px; }
   }
 </style>
 </head>
@@ -284,6 +341,43 @@
 
   loopcms · <span class="ok">NOMINAL</span> · amber-lighthouse-42
   Content: 0 items · Proof: chain valid</div>
+  </div>
+</section>
+
+<section class="get-started">
+  <div class="wrap">
+    <div class="eyebrow">Get started</div>
+    <h2>Three steps. No jargon.</h2>
+    <div class="steps">
+
+      <div class="step">
+        <div class="step-num">1</div>
+        <div>
+          <h3>Install Node.js</h3>
+          <p>Loop CMS runs on Node.js. If you don't have it, download it from <a class="inline-link" href="https://nodejs.org">nodejs.org</a> (pick the big green button).</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div>
+          <h3>Download</h3>
+          <p>Download <a class="inline-link" href="https://github.com/sheagunther/loop-cms/releases/latest/download/loopcms.js">loopcms.js</a> and put it somewhere you'll remember — your Desktop works fine.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <div>
+          <h3>Run it</h3>
+          <p>Open Terminal (Mac: <strong>Cmd+Space</strong>, type <strong>Terminal</strong>) or Command Prompt (Windows: search for <strong>cmd</strong>). Type these two lines:</p>
+          <code class="step-code"><span class="prompt">$</span>cd ~/Desktop
+<span class="prompt">$</span>node loopcms.js</code>
+          <p>Open <a class="inline-link" href="http://localhost:3000">http://localhost:3000</a> in your browser. Log in with <strong>admin</strong> / <strong>admin</strong>. You're in.</p>
+        </div>
+      </div>
+
+    </div>
   </div>
 </section>
 
