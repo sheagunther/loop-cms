@@ -19,6 +19,23 @@ const jwt = require('jsonwebtoken');
 // CONFIGURATION
 // ============================================================================
 
+// Software bill of materials — single-file inventory of runtime surface.
+const SBOM = {
+  name: 'loopcms',
+  version: '1.0.0',
+  runtime: 'node',
+  generated_at: new Date().toISOString(),
+  dependencies: [
+    { name: 'bcryptjs',       source: 'npm',  purpose: 'password hashing' },
+    { name: 'jsonwebtoken',   source: 'npm',  purpose: 'JWT signing and verification' },
+    { name: 'node:sqlite',    source: 'node', purpose: 'embedded SQLite storage (DatabaseSync)' },
+    { name: 'node:http',      source: 'node', purpose: 'HTTP server' },
+    { name: 'node:crypto',    source: 'node', purpose: 'hashing, HMAC, random bytes' },
+    { name: 'node:fs',        source: 'node', purpose: 'filesystem I/O' },
+    { name: 'node:path',      source: 'node', purpose: 'path joining' },
+  ],
+};
+
 const CONFIG = {
   port: parseInt(process.env.PORT || '3000'),
   host: process.env.HOST || 'localhost',
@@ -490,6 +507,16 @@ function processRequest(req) {
     }
   }
 
+  // FBD-LM1: writes are refused when lifecycle is in SAFE_MODE. Reads still flow.
+  if (config.type === 'write') {
+    const state = db.prepare("SELECT value FROM system_state WHERE key='lifecycle_state'").get();
+    if (state?.value === 'SAFE_MODE') {
+      return { ok: false, status: 503,
+        error: 'System is in SAFE_MODE — writes are paused until the operator clears it.',
+        code: 'SAFE_MODE' };
+    }
+  }
+
   // Phase 3: Validate
   const validated = reqValidate(req, config);
   if (!validated.ok) {
@@ -948,7 +975,7 @@ async function handleRequest(req, res) {
     db.prepare("INSERT OR REPLACE INTO csrf_tokens (token, user_id, created_at) VALUES (?,?,datetime('now'))").run(csrfToken, user.id);
 
     proofAppend('auth.success', { userId: user.id, username: user.username }, user.id);
-    sendJson(res, 200, { token: accessToken, refreshToken, csrfToken, user: { id: user.id, username: user.username, role: user.role } });
+    sendJson(res, 200, { token: accessToken, refreshToken, csrfToken, user: { id: user.id, username: user.username, role: user.role, permissions: ROLES[user.role] || [] } });
     return;
   }
 
@@ -1125,6 +1152,47 @@ async function handleRequest(req, res) {
     return;
   }
 
+  // ---- ADMIN: SBOM ----
+  if (pathname === '/api/admin/sbom' && method === 'GET') {
+    if (!token) { sendJson(res, 401, { error: 'Authentication required.' }); return; }
+    sendJson(res, 200, SBOM);
+    return;
+  }
+
+  // ---- ADMIN: spec history ----
+  if (pathname === '/api/admin/spec-history' && method === 'GET') {
+    if (!token) { sendJson(res, 401, { error: 'Authentication required.' }); return; }
+    const entries = db.prepare('SELECT version, fingerprint, spec_hash, created_at FROM spec_versions ORDER BY version DESC').all();
+    sendJson(res, 200, entries);
+    return;
+  }
+
+  // ---- ADMIN: spec diff between two versions ----
+  if (pathname === '/api/admin/spec-diff' && method === 'GET') {
+    if (!token) { sendJson(res, 401, { error: 'Authentication required.' }); return; }
+    const from = parseInt(url.searchParams.get('from'));
+    const to = parseInt(url.searchParams.get('to'));
+    const fromRow = db.prepare('SELECT version, fingerprint, spec_hash, created_at FROM spec_versions WHERE version=?').get(from);
+    const toRow = db.prepare('SELECT version, fingerprint, spec_hash, created_at FROM spec_versions WHERE version=?').get(to);
+    const identical = fromRow && toRow && fromRow.spec_hash === toRow.spec_hash;
+    const changes = [];
+    if (fromRow && toRow) {
+      if (fromRow.fingerprint !== toRow.fingerprint) changes.push({ field: 'fingerprint', from: fromRow.fingerprint, to: toRow.fingerprint });
+      if (fromRow.spec_hash !== toRow.spec_hash) changes.push({ field: 'spec_hash', from: fromRow.spec_hash, to: toRow.spec_hash });
+    }
+    sendJson(res, 200, { from: fromRow, to: toRow, diff: identical ? 'same' : 'different', changes });
+    return;
+  }
+
+  // ---- ADMIN: ghost-links listing (proof vault, entry_type=content.ghost_links) ----
+  if (pathname === '/api/admin/ghost-links' && method === 'GET') {
+    if (!token) { sendJson(res, 401, { error: 'Authentication required.' }); return; }
+    const rows = db.prepare("SELECT id, entry_data, actor, created_at FROM proof_vault WHERE entry_type='content.ghost_links' ORDER BY id DESC LIMIT 100").all();
+    const entries = rows.map(r => ({ id: r.id, actor: r.actor, created_at: r.created_at, ...JSON.parse(r.entry_data) }));
+    sendJson(res, 200, entries);
+    return;
+  }
+
   // ---- STATUS (loopctl status equivalent) ----
   if (pathname === '/api/status') {
     const state = db.prepare("SELECT value FROM system_state WHERE key='lifecycle_state'").get();
@@ -1293,6 +1361,7 @@ function adminPage() {
 </style>
 </head>
 <body>
+<div id="toast-region" aria-live="polite" aria-atomic="true" style="position:fixed;top:20px;right:20px;z-index:9999;pointer-events:none"></div>
 <div class="app" id="app">
 
 <!-- LOGIN SCREEN -->
@@ -1300,8 +1369,8 @@ function adminPage() {
   <div class="card">
     <h2>Loop CMS</h2>
     <p style="color:var(--muted);margin-bottom:20px;font-size:14px">Sign in to continue.</p>
-    <div class="field-group"><label>Username</label><input id="login-user" type="text" autocomplete="username"></div>
-    <div class="field-group"><label>Password</label><input id="login-pass" type="password" autocomplete="current-password"></div>
+    <div class="field-group"><label for="login-user">Username</label><input id="login-user" type="text" autocomplete="username"></div>
+    <div class="field-group"><label for="login-pass">Password</label><input id="login-pass" type="password" autocomplete="current-password"></div>
     <button class="btn btn-primary" onclick="doLogin()" style="width:100%">Sign In</button>
     <p id="login-error" style="color:#dc2626;font-size:13px;margin-top:8px" class="hidden"></p>
   </div>
@@ -1311,11 +1380,12 @@ function adminPage() {
 <div id="main-app" class="app hidden" style="width:100%">
   <nav class="sidebar">
     <h1>Loop<span>CMS</span></h1>
-    <button class="nav-btn active" onclick="showView('write')">&#9998; Write</button>
-    <button class="nav-btn" onclick="showView('upload')">&#8682; Upload</button>
-    <button class="nav-btn" onclick="showView('preview')">&#9673; Preview</button>
-    <button class="nav-btn" onclick="showView('schedule')">&#9200; Schedule</button>
-    <button class="nav-btn" onclick="showView('publish')">&#10003; Publish</button>
+    <button class="nav-btn active" data-permission="content:write" onclick="showView('write')">&#9998; Write</button>
+    <button class="nav-btn" data-permission="media:upload" onclick="showView('upload')">&#8682; Upload</button>
+    <button class="nav-btn" data-permission="content:preview" onclick="showView('preview')">&#9673; Preview</button>
+    <button class="nav-btn" data-permission="content:schedule" onclick="showView('schedule')">&#9200; Schedule</button>
+    <button class="nav-btn" data-permission="content:publish" onclick="showView('publish')">&#10003; Publish</button>
+    <button class="nav-btn" data-permission="content:read" onclick="showView('ghost-links')">&#9678; Ghost Links</button>
     <div class="sidebar-footer">
       <div id="user-info"></div>
       <div id="fingerprint" class="fingerprint" style="margin-top:4px"></div>
@@ -1342,11 +1412,18 @@ async function doLogin() {
       document.getElementById('login-screen').classList.add('hidden');
       document.getElementById('main-app').classList.remove('hidden');
       document.getElementById('user-info').textContent = d.user.username + ' · ' + d.user.role;
+      applyRolePermissions();
       loadStatus(); showView('write');
     } else {
       const el = document.getElementById('login-error'); el.textContent = d.error; el.classList.remove('hidden');
     }
   } catch(e) { toast('Connection error','error'); }
+}
+function applyRolePermissions() {
+  const perms = new Set(state.user?.permissions || []);
+  document.querySelectorAll('[data-permission]').forEach(el => {
+    el.style.display = perms.has(el.dataset.permission) ? '' : 'none';
+  });
 }
 function doLogout() { state = {token:null,refreshToken:null,csrfToken:null,user:null,currentView:'write',editingId:null};
   document.getElementById('login-screen').classList.remove('hidden'); document.getElementById('main-app').classList.add('hidden'); }
@@ -1374,7 +1451,7 @@ async function loadStatus() {
 
 function showView(view) {
   state.currentView = view; state.editingId = null;
-  document.querySelectorAll('.nav-btn').forEach((b,i) => b.classList.toggle('active', ['write','upload','preview','schedule','publish'][i]===view));
+  document.querySelectorAll('.nav-btn').forEach((b,i) => b.classList.toggle('active', ['write','upload','preview','schedule','publish','ghost-links'][i]===view));
   const main = document.getElementById('main-content');
 
   if (view === 'write') loadWriteView(main);
@@ -1382,6 +1459,21 @@ function showView(view) {
   else if (view === 'preview') loadPreviewView(main);
   else if (view === 'schedule') main.innerHTML = '<div class="card"><h3>Schedule</h3><p style="color:var(--muted);margin-top:8px">Select an article from Write view and set a publish date.</p></div>';
   else if (view === 'publish') loadPublishView(main);
+  else if (view === 'ghost-links') loadGhostLinksView(main);
+}
+
+async function loadGhostLinksView(main) {
+  const r = await apiFetch('/api/admin/ghost-links');
+  const entries = r.ok ? await r.json() : [];
+  main.innerHTML = '<h2 style="margin-bottom:16px">Ghost Links</h2>' +
+    '<p style="color:var(--muted);margin-bottom:16px">Deleted content preserves outbound references here. Links survive the source.</p>' +
+    (entries.length ? entries.map(e =>
+      '<div class="card"><h3>'+esc(e.title||e.slug||'(untitled)')+'</h3>' +
+      '<div style="color:var(--muted);font-size:13px;margin-top:4px">/'+esc(e.slug||'')+' · deleted '+
+      (e.deleted_at ? new Date(e.deleted_at).toLocaleDateString() : '')+'</div>' +
+      (e.tags ? '<div style="margin-top:8px;font-size:13px">Tags: '+esc(e.tags)+'</div>' : '') +
+      '</div>'
+    ).join('') : '<div class="card"><p style="color:var(--muted)">No deleted content yet.</p></div>');
 }
 
 async function loadWriteView(main) {
@@ -1412,14 +1504,14 @@ function showEditor(a) {
   main.innerHTML = '<div class="card"><div style="display:flex;justify-content:space-between;margin-bottom:16px">' +
     '<h3>'+(state.editingId?'Edit':'New')+' Article</h3>' +
     '<button class="btn btn-outline btn-sm" onclick="showView(\'write\')">Back</button></div>' +
-    '<div class="field-group"><label>Title</label><input id="ed-title" value="'+esc(a.title||'')+'"></div>' +
-    '<div class="field-group"><label>Body</label><textarea id="ed-body">'+esc(a.body||'')+'</textarea></div>' +
-    '<div class="collapsible-header" onclick="document.getElementById(\'seo-panel\').classList.toggle(\'hidden\')">&#9660; SEO & Metadata</div>' +
+    '<div class="field-group"><label for="ed-title">Title</label><input id="ed-title" value="'+esc(a.title||'')+'"></div>' +
+    '<div class="field-group"><label for="ed-body">Body</label><textarea id="ed-body">'+esc(a.body||'')+'</textarea></div>' +
+    '<button type="button" class="collapsible-header" onclick="document.getElementById(\'seo-panel\').classList.toggle(\'hidden\')">&#9660; SEO & Metadata</button>' +
     '<div id="seo-panel" class="hidden">' +
-    '<div class="field-group"><label>Slug</label><input id="ed-slug" value="'+esc(a.slug||'')+'" placeholder="auto-generated from title"></div>' +
-    '<div class="field-group"><label>Meta Title</label><input id="ed-meta-title" value="'+esc(a.meta_title||'')+'"></div>' +
-    '<div class="field-group"><label>Meta Description</label><input id="ed-meta-desc" value="'+esc(a.meta_description||'')+'"></div>' +
-    '<div class="field-group"><label>Tags (JSON array)</label><input id="ed-tags" value=\''+esc(a.tags||'[]')+'\'></div>' +
+    '<div class="field-group"><label for="ed-slug">Slug</label><input id="ed-slug" value="'+esc(a.slug||'')+'" placeholder="auto-generated from title"></div>' +
+    '<div class="field-group"><label for="ed-meta-title">Meta Title</label><input id="ed-meta-title" value="'+esc(a.meta_title||'')+'"></div>' +
+    '<div class="field-group"><label for="ed-meta-desc">Meta Description</label><input id="ed-meta-desc" value="'+esc(a.meta_description||'')+'"></div>' +
+    '<div class="field-group"><label for="ed-tags">Tags (JSON array)</label><input id="ed-tags" value=\''+esc(a.tags||'[]')+'\'></div>' +
     '</div>' +
     '<div style="display:flex;gap:8px;margin-top:16px"><button class="btn btn-primary" onclick="saveArticle()">Save</button>' +
     (state.editingId && a.status!=='published' ? '<button class="btn btn-success" onclick="publishArticle(\''+a.id+'\')">Publish</button>' : '') +
@@ -1458,7 +1550,7 @@ async function publishArticle(id) {
 async function loadUploadView(main) {
   const r = await apiFetch('/api/media'); const media = await r.json();
   main.innerHTML = '<h2 style="margin-bottom:16px">Media Library</h2>' +
-    '<div class="card"><div class="field-group"><label>Upload File</label>' +
+    '<div class="card"><div class="field-group"><label for="file-input">Upload File</label>' +
     '<input type="file" id="file-input" onchange="uploadFile()"></div></div>' +
     '<div class="card"><h3>Files</h3>' +
     (Array.isArray(media) && media.length ? media.map(m =>
@@ -1517,7 +1609,8 @@ async function loadPublishView(main) {
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function toast(msg,type) {
   const t = document.createElement('div'); t.className='toast toast-'+type; t.textContent=msg;
-  document.body.appendChild(t); setTimeout(()=>t.remove(), 3000);
+  (document.getElementById('toast-region') || document.body).appendChild(t);
+  setTimeout(()=>t.remove(), 3000);
 }
 </script>
 </body></html>`;

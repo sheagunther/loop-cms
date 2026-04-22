@@ -861,8 +861,12 @@ describe('Accessibility', () => {
     // No file — check for an endpoint.
     const srv = await startServer();
     try {
-      const r = await fetch(srv.baseUrl + '/api/sbom');
-      assert.ok(r.status !== 404, 'SBOM file or /api/sbom endpoint must exist (checked: ' + sbomFiles.join(', ') + ')');
+      const auth = await getAuthToken(srv.baseUrl);
+      const r = await fetch(srv.baseUrl + '/api/admin/sbom', authed(auth));
+      assert.strictEqual(r.status, 200, 'SBOM file or /api/admin/sbom endpoint must exist (checked: ' + sbomFiles.join(', ') + ')');
+      const body = await r.json();
+      assert.ok(Array.isArray(body.dependencies) && body.dependencies.length > 0,
+        'SBOM lists dependencies');
     } finally {
       await srv.cleanup();
     }
