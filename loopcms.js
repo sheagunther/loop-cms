@@ -1736,15 +1736,47 @@ function adminPage() {
   /* ---- Editor (writer feel) ---- */
   .editor-title {
     font-size:24px; font-weight:600; line-height:1.3;
-    padding:8px 0; margin-bottom:20px;
-    background:transparent; border:none;
-    border-bottom:1px solid var(--border); border-radius:0;
+    padding:12px 0; margin-bottom:24px;
+    background:transparent; color:var(--fg);
+    border:none; border-bottom:1px solid var(--border); border-radius:0;
+    width:100%;
   }
-  .editor-title:focus { border-color:var(--accent); box-shadow:none; }
+  .editor-title::placeholder { color:#9ca3af; font-weight:500; }
+  .editor-title:focus {
+    outline:none; border-bottom-color:var(--accent); box-shadow:none;
+  }
   .editor-body {
-    min-height:420px; padding:18px 22px;
-    font-size:16px; line-height:1.7;
+    min-height:420px; padding:20px 24px;
+    font-size:16px; line-height:1.7; color:var(--fg);
     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    background:var(--surface);
+    border:1px solid var(--border); border-radius:var(--radius);
+  }
+  .editor-body:focus {
+    outline:none; border-color:var(--accent);
+    box-shadow:0 0 0 3px rgba(217,79,4,0.1);
+  }
+  .editor-body:empty::before {
+    content:attr(data-placeholder); color:#9ca3af; pointer-events:none;
+  }
+  .editor-body p { margin:0 0 1em 0; }
+  .editor-body p:last-child { margin-bottom:0; }
+  .editor-body h1, .editor-body h2, .editor-body h3 {
+    margin:1.2em 0 0.4em; font-weight:600; line-height:1.3;
+  }
+  .editor-body h1 { font-size:22px; }
+  .editor-body h2 { font-size:19px; }
+  .editor-body h3 { font-size:17px; }
+  .editor-body ul, .editor-body ol { margin:0 0 1em 1.5em; }
+  .editor-body blockquote {
+    margin:0 0 1em; padding-left:16px;
+    border-left:3px solid var(--border); color:var(--muted);
+  }
+
+  /* Visually hidden but still announced by screen readers. */
+  .sr-only {
+    position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+    overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;
   }
 
   /* ---- Status pills ---- */
@@ -1962,8 +1994,10 @@ function showEditor(a) {
   main.innerHTML = '<div class="card"><div style="display:flex;justify-content:space-between;margin-bottom:16px">' +
     '<h3>'+(state.editingId?'Edit':'New')+' Article</h3>' +
     '<button class="btn btn-outline btn-sm" onclick="showView(\\'write\\')">Back</button></div>' +
-    '<div class="field-group"><label for="ed-title">Title</label><input id="ed-title" class="editor-title" value="'+esc(a.title||'')+'" placeholder="Untitled"></div>' +
-    '<div class="field-group"><label for="ed-body">Body</label><textarea id="ed-body" class="editor-body" placeholder="Start writing...">'+esc(a.body||'')+'</textarea></div>' +
+    '<div class="field-group"><label for="ed-title" class="sr-only">Title</label>' +
+    '<input id="ed-title" class="editor-title" value="'+esc(a.title||'')+'" placeholder="Untitled"></div>' +
+    '<div class="field-group"><label for="ed-body" class="sr-only">Body</label>' +
+    '<div id="ed-body" class="editor-body" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Start writing...">'+(a.body||'')+'</div></div>' +
     '<button type="button" class="collapsible-header" onclick="document.getElementById(\\'seo-panel\\').classList.toggle(\\'hidden\\')">&#9660; SEO & Metadata</button>' +
     '<div id="seo-panel" class="hidden">' +
     '<div class="field-group"><label for="ed-slug">Slug</label><input id="ed-slug" value="'+esc(a.slug||'')+'" placeholder="auto-generated from title"></div>' +
@@ -1977,9 +2011,14 @@ function showEditor(a) {
 }
 
 async function saveArticle() {
+  const bodyEl = document.getElementById('ed-body');
+  // Editor is a contenteditable div — read innerHTML; trailing <br> from an
+  // emptied field gets dropped so a cleared editor saves as empty.
+  let bodyHtml = bodyEl.innerHTML || '';
+  if (bodyHtml === '<br>' || bodyHtml === '<div><br></div>') bodyHtml = '';
   const payload = {
     title: document.getElementById('ed-title').value,
-    body: document.getElementById('ed-body').value,
+    body: bodyHtml,
     slug: document.getElementById('ed-slug').value || undefined,
     meta_title: document.getElementById('ed-meta-title')?.value,
     meta_description: document.getElementById('ed-meta-desc')?.value,
