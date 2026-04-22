@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loop CMS — One file. One command. Your content is yours.</title>
+<meta name="description" content="A 262-kilobyte content management system that runs on one command. No dependencies, no lock-in, no silent data loss.">
+<meta property="og:title" content="Loop CMS">
+<meta property="og:description" content="One file. One command. Your content is yours.">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@500;600&family=Source+Serif+4:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #faf8f5;
+    --paper-warm: #f5f1e8;
+    --ink: #1a1a1a;
+    --ink-muted: #525252;
+    --ink-soft: #737373;
+    --accent: #c4501a;
+    --accent-hover: #a4411a;
+    --rule: #e5dfd1;
+    --terminal-bg: #1a1a2e;
+    --terminal-fg: #e4e4eb;
+    --serif: 'Source Serif 4', 'Source Serif Pro', Georgia, serif;
+    --sans: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: var(--serif);
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 18px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1px;
+    transition: color 0.15s;
+  }
+  a:hover { color: var(--accent-hover); }
+
+  .wrap { max-width: 680px; margin: 0 auto; padding: 0 24px; }
+
+  .eyebrow {
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--accent);
+    margin-bottom: 20px;
+  }
+
+  /* Hero */
+  .hero {
+    padding: 120px 0 72px;
+    text-align: center;
+  }
+  .hero h1 {
+    font-family: var(--serif);
+    font-size: 56px;
+    font-weight: 600;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    margin: 0 0 28px;
+  }
+  .hero .lede {
+    font-family: var(--serif);
+    font-size: 20px;
+    line-height: 1.6;
+    color: var(--ink-muted);
+    max-width: 520px;
+    margin: 0 auto 40px;
+  }
+  .cta, .cta-secondary {
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 500;
+    text-decoration: none;
+    display: inline-block;
+    transition: background 0.15s, color 0.15s;
+  }
+  .cta {
+    padding: 14px 28px;
+    background: var(--accent);
+    color: #fff;
+    border-radius: 4px;
+  }
+  .cta:hover { background: var(--accent-hover); color: #fff; }
+  .cta-secondary {
+    padding: 14px 20px;
+    color: var(--ink);
+    margin-left: 8px;
+  }
+  .cta-secondary:hover { color: var(--accent); }
+
+  /* Terminal */
+  .terminal-section { padding: 8px 0 100px; }
+  .terminal {
+    background: var(--terminal-bg);
+    color: var(--terminal-fg);
+    font-family: 'SF Mono', Monaco, Menlo, 'Cascadia Code', monospace;
+    font-size: 14px;
+    line-height: 1.75;
+    padding: 28px 32px;
+    border-radius: 6px;
+    overflow-x: auto;
+    white-space: pre;
+    box-shadow: 0 20px 50px -25px rgba(26,26,46,0.25);
+  }
+  .terminal .prompt { color: var(--accent); }
+  .terminal .ok { color: #9fe088; }
+  .terminal .dim { color: #8b8ba3; }
+
+  /* Sections */
+  section { padding: 88px 0; }
+  section + section { border-top: 1px solid var(--rule); }
+  h2 {
+    font-family: var(--serif);
+    font-size: 34px;
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: -0.015em;
+    margin: 0 0 24px;
+  }
+  p { margin: 0 0 20px; }
+
+  /* Origin — drop cap on first paragraph */
+  .origin .drop-cap::first-letter {
+    font-family: var(--serif);
+    font-size: 68px;
+    font-weight: 600;
+    float: left;
+    line-height: 0.9;
+    padding: 8px 14px 0 0;
+    color: var(--accent);
+  }
+
+  /* Features */
+  .features { background: var(--paper-warm); }
+  .features-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 40px 48px;
+    margin-top: 36px;
+  }
+  .feature h3 {
+    font-family: var(--serif);
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0 0 8px;
+    letter-spacing: -0.005em;
+  }
+  .feature p {
+    font-family: var(--serif);
+    font-size: 16px;
+    line-height: 1.65;
+    color: var(--ink-muted);
+    margin: 0;
+  }
+  .feature code {
+    font-family: 'SF Mono', Monaco, Menlo, monospace;
+    font-size: 13px;
+    background: rgba(196,80,26,0.08);
+    padding: 1px 6px;
+    border-radius: 3px;
+    color: var(--accent);
+  }
+
+  /* Refusals */
+  .refusals ul {
+    list-style: none;
+    padding: 0;
+    margin: 32px 0 0;
+  }
+  .refusals li {
+    font-family: var(--serif);
+    font-size: 22px;
+    font-weight: 400;
+    line-height: 1.5;
+    padding: 20px 0 20px 40px;
+    border-bottom: 1px solid var(--rule);
+    position: relative;
+  }
+  .refusals li:last-child { border-bottom: none; }
+  .refusals li::before {
+    content: '—';
+    position: absolute;
+    left: 0;
+    top: 19px;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* Closing */
+  .closing {
+    text-align: center;
+    padding: 120px 0 100px;
+  }
+  .closing h2 {
+    font-size: 44px;
+    line-height: 1.1;
+    margin-bottom: 28px;
+  }
+  .closing p {
+    font-family: var(--serif);
+    font-size: 18px;
+    color: var(--ink-muted);
+    max-width: 440px;
+    margin: 0 auto 36px;
+  }
+
+  /* Footer */
+  footer {
+    padding: 48px 0 64px;
+    border-top: 1px solid var(--rule);
+    text-align: center;
+    font-family: var(--sans);
+    font-size: 13px;
+    color: var(--ink-soft);
+  }
+  footer em {
+    font-family: var(--serif);
+    font-style: italic;
+    color: var(--ink-muted);
+    font-size: 15px;
+  }
+  footer .footer-links { margin-top: 18px; }
+  footer .footer-links a {
+    color: var(--ink-muted);
+    text-decoration: none;
+    margin: 0 10px;
+    padding-bottom: 1px;
+    border-bottom: 1px solid var(--rule);
+  }
+  footer .footer-links a:hover { color: var(--accent); border-color: var(--accent); }
+
+  @media (max-width: 640px) {
+    body { font-size: 17px; }
+    .hero { padding: 72px 0 56px; }
+    .hero h1 { font-size: 40px; }
+    .hero .lede { font-size: 18px; }
+    h2 { font-size: 28px; }
+    section { padding: 64px 0; }
+    .features-grid { grid-template-columns: 1fr; gap: 32px; }
+    .refusals li { font-size: 18px; padding-left: 32px; }
+    .refusals li::before { top: 17px; }
+    .closing h2 { font-size: 32px; }
+    .closing { padding: 80px 0 72px; }
+    .terminal { font-size: 12.5px; padding: 20px 18px; }
+    .cta-secondary { display: block; margin: 16px 0 0; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Loop CMS · v0.2.0</div>
+    <h1>One file. One command.<br>Your content is yours.</h1>
+    <p class="lede">A 262-kilobyte content management system that refuses to lose your words. No dependencies. No lock-in. No silent failures.</p>
+    <a class="cta" href="https://github.com/sheagunther/loop-cms/releases/latest/download/loopcms.js">Download loopcms.js</a>
+    <a class="cta-secondary" href="https://github.com/sheagunther/loop-cms">View on GitHub →</a>
+  </div>
+</header>
+
+<section class="terminal-section">
+  <div class="wrap">
+    <div class="terminal"><span class="dim">$</span> <span class="prompt">node</span> loopcms.js
+
+  Welcome to Loop CMS.
+  Default login: <span class="ok">admin / admin</span>
+  Change your password immediately.
+
+  Ready. Open your browser.
+  <span class="ok">http://localhost:3000</span>
+
+  loopcms · <span class="ok">NOMINAL</span> · amber-lighthouse-42
+  Content: 0 items · Proof: chain valid</div>
+  </div>
+</section>
+
+<section class="origin">
+  <div class="wrap">
+    <div class="eyebrow">Why this exists</div>
+    <h2>Bluehost lost everything.</h2>
+    <p class="drop-cap">A year of essays. No backups. No apology. Just a support ticket that closed itself before anyone could open it again. The kind of loss that turns into a quiet promise you make to yourself in the dark.</p>
+    <p>Loop CMS is what the replacement should have been — a single file of JavaScript that runs on one command. A SQLite database you can hold in your hand. An append-only ledger underneath where every change is provable. A system that assumes the host will fail, and plans around it.</p>
+    <p>It's the thing a stranger can clone in sixty seconds and trust on day one.</p>
+  </div>
+</section>
+
+<section class="features">
+  <div class="wrap">
+    <div class="eyebrow">What's inside</div>
+    <h2>Eight ideas, one file.</h2>
+    <div class="features-grid">
+      <div class="feature">
+        <h3>Proof Vault</h3>
+        <p>Every auth event, content change, and system transition appends to a hash-chained ledger. Each entry carries the previous one's hash. You can prove what happened.</p>
+      </div>
+      <div class="feature">
+        <h3>Time Travel</h3>
+        <p>Any content URL accepts <code>?at=&lt;timestamp&gt;</code>. Read the site as it existed at that instant. The response tells you how far back the archive goes.</p>
+      </div>
+      <div class="feature">
+        <h3>Seismograph</h3>
+        <p>Before you publish, the system shows you every webhook that will fire, every cache that will invalidate, every feed that will regenerate. No surprises downstream.</p>
+      </div>
+      <div class="feature">
+        <h3>Déjà Vu</h3>
+        <p>Write a draft that overlaps an existing article and the system notices. A dismissible sidebar note — advisory, not a block. The draft always saves first.</p>
+      </div>
+      <div class="feature">
+        <h3>Constellation Fingerprint</h3>
+        <p>Every running instance gets a human name — <code>amber-lighthouse-42</code>, <code>winter-temple-88</code>. You know which version is on which server without reading a git sha.</p>
+      </div>
+      <div class="feature">
+        <h3>Stranger Walk</h3>
+        <p>On demand, the system walks its own sitemap, follows its own links, and checks its own images. Too many broken, and it flags itself DEGRADED.</p>
+      </div>
+      <div class="feature">
+        <h3>Content Sanitization</h3>
+        <p>Script tags, iframes, event handlers, <code>javascript:</code> URIs — stripped on write. JPEGs lose their EXIF. SVGs lose their scripts. The editor tells you what was cleaned.</p>
+      </div>
+      <div class="feature">
+        <h3>REST API</h3>
+        <p><code>/api/content</code>, <code>/api/search</code>, <code>/api/media</code>. JWT-authenticated, CSRF-gated, rate-limited, paginated. RSS, Atom, and sitemap.xml included.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="refusals">
+  <div class="wrap">
+    <div class="eyebrow">A short list</div>
+    <h2>This CMS will never:</h2>
+    <ul>
+      <li>be boring.</li>
+      <li>silently lose data.</li>
+      <li>gate security behind a paywall.</li>
+      <li>make you fight the tool.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="closing">
+  <div class="wrap">
+    <h2>Sixty seconds<br>to your first article.</h2>
+    <p>Download one file. Run one command. Open your browser. Write.</p>
+    <a class="cta" href="https://github.com/sheagunther/loop-cms/releases/latest/download/loopcms.js">Download loopcms.js</a>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <em>Built in New Gloucester, Maine.</em>
+    <div class="footer-links">
+      <a href="https://github.com/sheagunther/loop-cms">GitHub</a>
+      <a href="https://github.com/sheagunther/loop-cms/releases">Releases</a>
+      <a href="https://github.com/sheagunther/loop-cms/blob/main/README.md">README</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
