@@ -8,6 +8,7 @@
 // ============================================================================
 
 const http = require('http');
+const https = require('https');
 const { DatabaseSync } = require('node:sqlite');
 const crypto = require('crypto');
 const path = require('path');
@@ -283,6 +284,17 @@ function initDatabase() {
     );
     CREATE INDEX IF NOT EXISTS idx_rate_limits ON rate_limits(key, timestamp);
 
+    -- Webhooks (FBD-WH1)
+    CREATE TABLE IF NOT EXISTS webhooks (
+      id TEXT PRIMARY KEY,
+      url TEXT NOT NULL,
+      events TEXT NOT NULL,
+      secret TEXT NOT NULL,
+      enabled INTEGER DEFAULT 1,
+      consecutive_failures INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
     -- System state
     CREATE TABLE IF NOT EXISTS system_state (
       key TEXT PRIMARY KEY,
@@ -301,6 +313,84 @@ function initDatabase() {
 // ============================================================================
 // PROOF VAULT — Append-only with hash chain (FBD-LI1)
 // ============================================================================
+
+// ============================================================================
+// WEBHOOKS (FBD-WH1)
+// Retry schedule: immediate, then +30s, then +5min. After 10 consecutive
+// terminal failures, the hook is auto-disabled. Payloads carry the event
+// type and content id only — never the full content body.
+// ============================================================================
+
+const WEBHOOK_RETRY_DELAYS_MS = [0, 30_000, 5 * 60_000];
+const WEBHOOK_AUTO_DISABLE_THRESHOLD = 10;
+
+function postWebhook(hook, payloadJson) {
+  return new Promise((resolve, reject) => {
+    let url;
+    try { url = new URL(hook.url); }
+    catch (e) { reject(new Error('invalid url')); return; }
+    const lib = url.protocol === 'https:' ? https : http;
+    const sig = 'sha256=' + crypto.createHmac('sha256', hook.secret).update(payloadJson).digest('hex');
+    const reqH = lib.request(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payloadJson),
+        'X-Hub-Signature-256': sig,
+        'X-Loop-Event': 'webhook',
+      },
+      timeout: 5000,
+    }, r => {
+      r.on('data', () => {});
+      r.on('end', () => {
+        if (r.statusCode >= 200 && r.statusCode < 300) resolve();
+        else reject(new Error('HTTP ' + r.statusCode));
+      });
+    });
+    reqH.on('error', reject);
+    reqH.on('timeout', () => { reqH.destroy(new Error('timeout')); });
+    reqH.write(payloadJson);
+    reqH.end();
+  });
+}
+
+function scheduleWebhookAttempt(hookId, payloadJson, attempt) {
+  const delay = WEBHOOK_RETRY_DELAYS_MS[attempt];
+  const timer = setTimeout(async () => {
+    const hook = db.prepare('SELECT * FROM webhooks WHERE id=? AND enabled=1').get(hookId);
+    if (!hook) return;
+    try {
+      await postWebhook(hook, payloadJson);
+      db.prepare('UPDATE webhooks SET consecutive_failures=0 WHERE id=?').run(hookId);
+    } catch (e) {
+      if (attempt + 1 < WEBHOOK_RETRY_DELAYS_MS.length) {
+        scheduleWebhookAttempt(hookId, payloadJson, attempt + 1);
+        return;
+      }
+      const row = db.prepare('SELECT consecutive_failures FROM webhooks WHERE id=?').get(hookId);
+      const failures = (row?.consecutive_failures || 0) + 1;
+      const enabled = failures >= WEBHOOK_AUTO_DISABLE_THRESHOLD ? 0 : 1;
+      db.prepare('UPDATE webhooks SET consecutive_failures=?, enabled=? WHERE id=?')
+        .run(failures, enabled, hookId);
+    }
+  }, delay);
+  timer.unref?.();
+}
+
+function emitEvent(eventType, contentId, actorId = 'system') {
+  const payload = JSON.stringify({
+    event: eventType,
+    content_id: contentId || null,
+    timestamp: new Date().toISOString(),
+  });
+  const hooks = db.prepare('SELECT id, events FROM webhooks WHERE enabled=1').all();
+  for (const h of hooks) {
+    let events = [];
+    try { events = JSON.parse(h.events); } catch (e) { continue; }
+    if (!Array.isArray(events) || !events.includes(eventType)) continue;
+    scheduleWebhookAttempt(h.id, payload, 0);
+  }
+}
 
 function proofAppend(entryType, entryData, actor = 'system') {
   const lastEntry = db.prepare('SELECT entry_hash FROM proof_vault ORDER BY id DESC LIMIT 1').get();
@@ -825,6 +915,19 @@ function reqExecute(data, identity, config, req) {
   }
 }
 
+// Map successful write contracts to the webhook event name.
+// STORE_CONTENT splits on HTTP status — 201 is a create, 200 is an update.
+function eventForResult(contractId, result) {
+  if (!result.ok || result.status >= 300) return null;
+  switch (contractId) {
+    case 'STORE_CONTENT':     return result.status === 201 ? 'content.created' : 'content.updated';
+    case 'PUBLISH_CONTENT':   return 'content.published';
+    case 'UNPUBLISH_CONTENT': return 'content.unpublished';
+    case 'DELETE_CONTENT':    return 'content.deleted';
+    default: return null;
+  }
+}
+
 function reqLog(result, identity, config, req) {
   if (config.proofLevel === 'audit' || !result.ok) {
     proofAppend(
@@ -838,6 +941,10 @@ function reqLog(result, identity, config, req) {
       },
       identity.userId || 'anonymous'
     );
+  }
+  const event = eventForResult(req.contractId, result);
+  if (event) {
+    emitEvent(event, req.contentId || result.data?.id, identity.userId || 'anonymous');
   }
 }
 
@@ -996,7 +1103,8 @@ async function handleRequest(req, res) {
   // ---- CSRF GATE (FBD-CF1) — authenticated state-changing requests ----
   const isCsrfProtectedWrite =
     (method === 'POST' || method === 'PUT' || method === 'DELETE') &&
-    (pathname.startsWith('/api/content') || pathname === '/api/media');
+    (pathname.startsWith('/api/content') || pathname === '/api/media' ||
+     pathname.startsWith('/api/webhooks'));
   if (isCsrfProtectedWrite && !validateCsrf(req, token)) {
     sendJson(res, 403, { error: 'CSRF token required. Log out and back in to get a fresh one.' });
     return;
@@ -1149,6 +1257,39 @@ async function handleRequest(req, res) {
   // ---- WEATHER ----
   if (pathname === '/api/weather') {
     sendJson(res, 200, { weather: generateContentWeather() });
+    return;
+  }
+
+  // ---- WEBHOOKS ----
+  if (pathname === '/api/webhooks') {
+    if (!token) { sendJson(res, 401, { error: 'Authentication required.' }); return; }
+    if (method === 'GET') {
+      const rows = db.prepare('SELECT id, url, events, enabled, consecutive_failures, created_at FROM webhooks ORDER BY created_at DESC').all();
+      sendJson(res, 200, rows.map(r => ({ ...r, events: JSON.parse(r.events) })));
+      return;
+    }
+    if (method === 'POST') {
+      const body = await parseBody(req);
+      if (!body.url || !Array.isArray(body.events) || !body.secret) {
+        sendJson(res, 400, { error: 'url, events[], and secret are required' });
+        return;
+      }
+      try { new URL(body.url); } catch (e) {
+        sendJson(res, 400, { error: 'invalid url' });
+        return;
+      }
+      const id = crypto.randomBytes(8).toString('hex');
+      db.prepare('INSERT INTO webhooks (id, url, events, secret) VALUES (?,?,?,?)')
+        .run(id, body.url, JSON.stringify(body.events), body.secret);
+      sendJson(res, 201, { id, url: body.url, events: body.events, enabled: true });
+      return;
+    }
+  }
+  if (pathname.startsWith('/api/webhooks/') && method === 'DELETE') {
+    if (!token) { sendJson(res, 401, { error: 'Authentication required.' }); return; }
+    const id = pathname.slice('/api/webhooks/'.length);
+    const info = db.prepare('DELETE FROM webhooks WHERE id=?').run(id);
+    sendJson(res, info.changes ? 200 : 404, info.changes ? { deleted: id } : { error: 'Not found' });
     return;
   }
 
