@@ -18,7 +18,11 @@ const jwt = require('jsonwebtoken');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const LOOPCMS_PATH = path.join(__dirname, 'loopcms.js');
+// Override to run the tests against a different build (e.g. the bundled
+// dist/loopcms.js) without editing the harness:  LOOPCMS_PATH=... node --test
+const LOOPCMS_PATH = process.env.LOOPCMS_PATH
+  ? path.resolve(process.env.LOOPCMS_PATH)
+  : path.join(__dirname, 'loopcms.js');
 
 // Seed a CSRF token directly into the server's sqlite DB for a given user id.
 // Used to exercise authenticated writes for minted (non-admin) JWTs.

@@ -4,7 +4,8 @@
   "description": "Single-file CMS. One command, five buttons, never loses data.",
   "main": "loopcms.js",
   "scripts": {
-    "test": "node --test loopcms.test.js"
+    "test": "node --test loopcms.test.js",
+    "build": "node build.js"
   },
   "repository": {
     "type": "git",
@@ -16,5 +17,8 @@
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "jsonwebtoken": "^9.0.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
   }
 }
