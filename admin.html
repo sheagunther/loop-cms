@@ -191,13 +191,15 @@
   .content-title:hover { color:var(--accent); }
   .content-meta { font-size:13px; color:var(--muted); margin-top:4px; }
   .content-actions { display:flex; align-items:center; gap:12px; flex-shrink:0; }
-  .btn-delete {
+  .btn-delete, .btn-preview {
     background:none; border:none; cursor:pointer;
     font-family:inherit; font-size:13px; font-weight:500;
     color:var(--muted); padding:4px 8px;
+    text-decoration:none;
     transition:color 0.15s;
   }
   .btn-delete:hover { color:#dc2626; }
+  .btn-preview:hover { color:var(--accent); }
   .upload-progress {
     margin-top:10px; font-size:13px; color:var(--muted);
     line-height:1.5; min-height:1em; font-variant-numeric:tabular-nums;
@@ -380,6 +382,7 @@ async function loadWriteView(main) {
       new Date(a.updated_at).toLocaleDateString() + '</div></div>' +
       '<div class="content-actions">' +
       '<span class="status-badge status-'+a.status+'">' + a.status + '</span>' +
+      (a.slug ? '<a class="btn-preview" href="/'+esc(a.slug)+'" target="_blank" rel="noopener">Preview</a>' : '') +
       '<button class="btn-delete" data-title="'+esc(a.title)+'" onclick="deleteArticle(\''+a.id+'\', this.dataset.title)">Delete</button>' +
       '</div></li>'
     ).join('') : '<li>No content yet</li>') + '</ul></div>';
