@@ -339,6 +339,52 @@ describe('Usability', () => {
     }
   });
 
+  it('U-04b: Admin cookie renders drafts on the public surface', async () => {
+    // Preview link in admin.html navigates to /<slug> in a new tab. The auth
+    // cookie set on login must travel with that navigation and cause the
+    // public handler to serve the draft. Anonymous visitors still 404.
+    const srv = await startServer();
+    try {
+      // Login directly to capture the Set-Cookie header.
+      const loginRes = await fetch(srv.baseUrl + '/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: 'admin' }),
+      });
+      assert.strictEqual(loginRes.status, 200);
+      const setCookie = loginRes.headers.get('set-cookie') || '';
+      assert.match(setCookie, /^token=/, 'login sets a token cookie');
+      assert.match(setCookie, /HttpOnly/i, 'token cookie is HttpOnly');
+      assert.match(setCookie, /SameSite=Lax/i, 'token cookie is SameSite=Lax');
+      const authed2 = await loginRes.json();
+
+      await fetch(srv.baseUrl + '/api/content', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + authed2.token,
+          'X-CSRF-Token': authed2.csrfToken,
+        },
+        body: JSON.stringify({ title: 'Preview Me', slug: 'preview-me', body: '<p>wip</p>' }),
+      });
+
+      // Anonymous: still 404.
+      const anon = await fetch(srv.baseUrl + '/preview-me');
+      assert.strictEqual(anon.status, 404, 'anonymous visitor cannot see draft');
+
+      // With the cookie the login handed back, the public page renders.
+      const cookieVal = setCookie.split(';')[0]; // "token=..."
+      const preview = await fetch(srv.baseUrl + '/preview-me', {
+        headers: { 'Cookie': cookieVal },
+      });
+      assert.strictEqual(preview.status, 200, 'admin cookie renders the draft');
+      const html = await preview.text();
+      assert.ok(/Preview Me/.test(html), 'draft title visible in rendered page');
+    } finally {
+      await srv.cleanup();
+    }
+  });
+
   it('U-05: Editor schedules publication', async () => {
     // Pass: scheduled content has status 'scheduled' and is not publicly visible before time.
     const srv = await startServer();
