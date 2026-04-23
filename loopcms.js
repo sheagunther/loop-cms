@@ -1187,6 +1187,25 @@ function validateCsrf(req, token) {
   return !!row && row.user_id === decoded.userId;
 }
 
+// Does the presented JWT grant a given permission? Used to let authenticated
+// previewers see draft pages on the public surface without giving anonymous
+// visitors the same privilege.
+function hasPermission(token, perm) {
+  if (!token) return false;
+  try {
+    const decoded = jwt.verify(token, CONFIG.jwtSecret);
+    return (ROLES[decoded?.role] || []).includes(perm);
+  } catch (e) { return false; }
+}
+
+// Cookie that mirrors the JWT so top-level navigations (e.g. Preview link
+// opening in a new tab) carry auth. HttpOnly so client JS can't read it;
+// SameSite=Lax so it ships on same-site top-level GETs but not cross-site
+// POSTs (keeps the CSRF posture intact).
+function authCookie(accessToken) {
+  return `token=${accessToken}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${15 * 60}`;
+}
+
 function sendJson(res, status, data, extraHeaders = {}) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
@@ -1253,7 +1272,10 @@ async function handleRequest(req, res) {
     db.prepare("INSERT OR REPLACE INTO csrf_tokens (token, user_id, created_at) VALUES (?,?,datetime('now'))").run(csrfToken, user.id);
 
     proofAppend('auth.success', { userId: user.id, username: user.username }, user.id);
-    sendJson(res, 200, { token: accessToken, refreshToken, csrfToken, user: { id: user.id, username: user.username, role: user.role, permissions: ROLES[user.role] || [] } });
+    sendJson(res, 200,
+      { token: accessToken, refreshToken, csrfToken, user: { id: user.id, username: user.username, role: user.role, permissions: ROLES[user.role] || [] } },
+      { 'Set-Cookie': authCookie(accessToken) }
+    );
     return;
   }
 
@@ -1267,7 +1289,10 @@ async function handleRequest(req, res) {
     const accessToken = jwt.sign({ userId: user.id, username: user.username, role: user.role }, CONFIG.jwtSecret, { expiresIn: CONFIG.jwtExpiry });
     const newRefresh = crypto.randomBytes(32).toString('hex');
     db.prepare('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES (?,?,?)').run(newRefresh, user.id, new Date(Date.now() + CONFIG.refreshExpiry).toISOString());
-    sendJson(res, 200, { token: accessToken, refreshToken: newRefresh });
+    sendJson(res, 200,
+      { token: accessToken, refreshToken: newRefresh },
+      { 'Set-Cookie': authCookie(accessToken) }
+    );
     return;
   }
 
@@ -1574,7 +1599,13 @@ ${articles.map(a => `<url><loc>${host}/${a.slug}</loc><lastmod>${a.updated_at}</
   // ---- PUBLIC CONTENT (Presentation Loop on public surface) ----
   if (pathname !== '/' && pathname !== '/admin' && !pathname.startsWith('/api') && !pathname.startsWith('/media')) {
     const slug = pathname.slice(1);
-    const article = db.prepare("SELECT * FROM content WHERE slug = ? AND status = 'published'").get(slug);
+    // Authenticated previewers see drafts / scheduled content; anonymous
+    // visitors see only published. Preview link in admin.html opens in a
+    // new tab; the auth cookie set on login flows with that navigation.
+    const canPreview = hasPermission(token, 'content:preview');
+    const article = canPreview
+      ? db.prepare("SELECT * FROM content WHERE slug = ?").get(slug)
+      : db.prepare("SELECT * FROM content WHERE slug = ? AND status = 'published'").get(slug);
     if (article) {
       sendHtml(res, publicArticlePage(article));
       return;
