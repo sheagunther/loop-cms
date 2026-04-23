@@ -332,7 +332,16 @@ async function doLogin() {
       document.getElementById('main-app').classList.remove('hidden');
       document.getElementById('user-info').textContent = d.user.username + ' · ' + d.user.role;
       applyRolePermissions();
-      loadStatus(); showView('write');
+      loadStatus();
+      // Deep-link from public page Edit links: /admin#write/<slug> opens that
+      // article's editor directly. Otherwise land on the Write list.
+      const hashMatch = window.location.hash.match(/^#write\/(.+)$/);
+      if (hashMatch) {
+        showView('write', true);
+        editArticle(decodeURIComponent(hashMatch[1]));
+      } else {
+        showView('write');
+      }
     } else {
       const el = document.getElementById('login-error'); el.textContent = d.error; el.classList.remove('hidden');
     }
@@ -368,9 +377,10 @@ async function loadStatus() {
   document.getElementById('fingerprint').textContent = d.fingerprint || '';
 }
 
-function showView(view) {
+function showView(view, skipRender) {
   state.currentView = view; state.editingId = null;
   document.querySelectorAll('.nav-btn').forEach((b,i) => b.classList.toggle('active', ['write','upload','preview','schedule','publish','ghost-links'][i]===view));
+  if (skipRender) return;
   const main = document.getElementById('main-content');
 
   if (view === 'write') loadWriteView(main);

@@ -1607,7 +1607,8 @@ ${articles.map(a => `<url><loc>${host}/${a.slug}</loc><lastmod>${a.updated_at}</
       ? db.prepare("SELECT * FROM content WHERE slug = ?").get(slug)
       : db.prepare("SELECT * FROM content WHERE slug = ? AND status = 'published'").get(slug);
     if (article) {
-      sendHtml(res, publicArticlePage(article));
+      const canEdit = hasPermission(token, 'content:write');
+      sendHtml(res, publicArticlePage(article, { canEdit }));
       return;
     }
   }
@@ -1667,7 +1668,10 @@ function adminPage() {
 // PUBLIC ARTICLE PAGE — Presentation Loop on public surface
 // ============================================================================
 
-function publicArticlePage(article) {
+function publicArticlePage(article, opts = {}) {
+  const editLink = opts.canEdit && article.slug
+    ? ` · <a href="/admin#write/${sanitizeForOutput(article.slug)}">Edit</a>`
+    : '';
   return `<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${sanitizeForOutput(article.meta_title || article.title)}</title>
@@ -1690,7 +1694,7 @@ function publicArticlePage(article) {
 <div class="meta">Published ${new Date(article.published_at).toLocaleDateString('en-US', {year:'numeric',month:'long',day:'numeric'})}</div>
 <div class="content">${article.body}</div>
 </article>
-<footer>Powered by <a href="/admin">Loop CMS</a> · <a href="/feed.xml">RSS</a></footer>
+<footer>Powered by <a href="/admin">Loop CMS</a> · <a href="/feed.xml">RSS</a>${editLink}</footer>
 </body></html>`;
 }
 

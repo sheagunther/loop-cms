@@ -385,6 +385,45 @@ describe('Usability', () => {
     }
   });
 
+  it('U-04c: Edit link in article footer renders only for content:write users', async () => {
+    // Footer of /<slug> shows "· Edit -> /admin#write/<slug>" when (and only
+    // when) the visitor's auth cookie carries content:write.
+    const srv = await startServer();
+    try {
+      const loginRes = await fetch(srv.baseUrl + '/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: 'admin' }),
+      });
+      const setCookie = loginRes.headers.get('set-cookie') || '';
+      const cookieVal = setCookie.split(';')[0];
+      const a = await loginRes.json();
+
+      const c = await (await fetch(srv.baseUrl + '/api/content', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + a.token, 'X-CSRF-Token': a.csrfToken },
+        body: JSON.stringify({ title: 'Edit linkable', slug: 'edit-linkable', body: '<p>x</p>' }),
+      })).json();
+      await fetch(srv.baseUrl + `/api/content/${c.id}/publish`, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + a.token, 'X-CSRF-Token': a.csrfToken },
+      });
+
+      const anonHtml = await (await fetch(srv.baseUrl + '/edit-linkable')).text();
+      assert.ok(!/href="\/admin#write/.test(anonHtml),
+        'no Edit link in footer for anonymous viewer');
+      assert.ok(/Powered by/.test(anonHtml), 'baseline footer still rendered');
+
+      const adminHtml = await (await fetch(srv.baseUrl + '/edit-linkable', {
+        headers: { 'Cookie': cookieVal },
+      })).text();
+      assert.match(adminHtml, /href="\/admin#write\/edit-linkable">Edit<\/a>/,
+        'Edit link present and points to /admin#write/<slug> for admin');
+    } finally {
+      await srv.cleanup();
+    }
+  });
+
   it('U-05: Editor schedules publication', async () => {
     // Pass: scheduled content has status 'scheduled' and is not publicly visible before time.
     const srv = await startServer();
